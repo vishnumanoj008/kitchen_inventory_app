@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "521280725475",
+    "project_id": "kitchen-ai-app-finalyear",
+    "storage_bucket": "kitchen-ai-app-finalyear.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:521280725475:android:6a265e1d36c81ec5a380d6",
+        "android_client_info": {
+          "package_name": "com.example.kitchen_inventory_app"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyD7PMZ-ltcOExKfN_HHQhsEuoNnCSKQyBQ"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
