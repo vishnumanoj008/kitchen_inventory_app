@@ -19,17 +19,44 @@ class MyApp extends StatefulWidget {
 
 class _MyAppState extends State<MyApp> {
   int index = 0;
+  String inventoryLocation = "fridge";
 
-  final pages = [
-    const DashboardScreen(),
-    const RecipeScreen(),
-    const CameraScreen(),
-    const InventoryScreen(),
-    const GroceryScreen(),
-  ];
+  void navigateToInventory(String location) {
+    setState(() {
+      index = 3; // Inventory tab index
+      inventoryLocation = location;
+    });
+  }
+
+  void navigateToCamera() {
+    setState(() {
+      index = 2; // Camera tab index
+    });
+  }
+
+  void navigateToRecipe() {
+    setState(() {
+      index = 1; // Recipe tab index
+    });
+  }
 
   @override
   Widget build(BuildContext context) {
+    final pages = [
+      DashboardScreen(
+        onNavigateToInventory: navigateToInventory,
+        onNavigateToCamera: navigateToCamera,
+        onNavigateToRecipe: navigateToRecipe,
+      ),
+      const RecipeScreen(),
+      const CameraScreen(),
+      InventoryScreen(
+        initialLocation: inventoryLocation,
+        onNavigateToCamera: navigateToCamera,
+      ),
+      const GroceryScreen(),
+    ];
+
     return MaterialApp(
       debugShowCheckedModeBanner: false,
       home: Scaffold(

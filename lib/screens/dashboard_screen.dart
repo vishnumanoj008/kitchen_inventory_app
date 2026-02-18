@@ -1,15 +1,22 @@
 import 'package:flutter/material.dart';
 
 class DashboardScreen extends StatelessWidget {
-  const DashboardScreen({super.key});
+  final Function(String)? onNavigateToInventory;
+  final VoidCallback? onNavigateToCamera;
+  final VoidCallback? onNavigateToRecipe;
+
+  const DashboardScreen({
+    super.key,
+    this.onNavigateToInventory,
+    this.onNavigateToCamera,
+    this.onNavigateToRecipe,
+  });
 
   @override
   Widget build(BuildContext context) {
     final quickStats = [
       {"label": "Fridge Items", "value": "24", "color": Colors.blue},
       {"label": "Pantry Items", "value": "38", "color": Colors.green},
-      {"label": "Expiring Soon", "value": "3", "color": Colors.orange},
-      {"label": "Shopping List", "value": "12", "color": Colors.purple},
     ];
 
     final expiringItems = [
@@ -33,6 +40,7 @@ class DashboardScreen extends StatelessWidget {
 
             // AI Suggestion Card
             Container(
+              width: double.infinity,
               padding: const EdgeInsets.all(16),
               decoration: BoxDecoration(
                 gradient: const LinearGradient(
@@ -54,7 +62,9 @@ class DashboardScreen extends StatelessWidget {
                   ),
                   const SizedBox(height: 12),
                   ElevatedButton(
-                    onPressed: () {},
+                    onPressed: () {
+                      onNavigateToRecipe?.call();
+                    },
                     child: const Text("View Recipe"),
                   ),
                 ],
@@ -77,27 +87,54 @@ class DashboardScreen extends StatelessWidget {
               ),
               itemBuilder: (_, i) {
                 final stat = quickStats[i];
-                return Card(
-                  child: Padding(
-                    padding: const EdgeInsets.all(12),
-                    child: Column(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        CircleAvatar(
-                          backgroundColor:
-                              (stat["color"] as Color).withOpacity(0.2),
-                          child: Text(stat["value"].toString()),
-                        ),
-                        const SizedBox(height: 6),
-                        Text(stat["label"].toString()),
-                      ],
+                return GestureDetector(
+                  onTap: () {
+                    if (stat["label"] == "Fridge Items") {
+                      onNavigateToInventory?.call("fridge");
+                    } else if (stat["label"] == "Pantry Items") {
+                      onNavigateToInventory?.call("pantry");
+                    }
+                  },
+                  child: Card(
+                    child: Padding(
+                      padding: const EdgeInsets.all(12),
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          CircleAvatar(
+                            backgroundColor:
+                                (stat["color"] as Color).withOpacity(0.2),
+                            child: Text(stat["value"].toString()),
+                          ),
+                          const SizedBox(height: 6),
+                          Text(stat["label"].toString()),
+                        ],
+                      ),
                     ),
                   ),
                 );
-              },
+              }
             ),
 
             const SizedBox(height: 20),
+
+            // Expiring Items Label
+            Align(
+              alignment: Alignment.centerLeft,
+              child: Row(
+                children: [
+                  Icon(Icons.schedule, size: 20),
+                  const SizedBox(width: 8),
+                  Text(
+                    "Quick Expiry Reminder",
+                    style: Theme.of(context).textTheme.headlineSmall?.copyWith(
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 8),
 
             // Expiring Items
             Card(
@@ -113,6 +150,24 @@ class DashboardScreen extends StatelessWidget {
             ),
 
             const SizedBox(height: 20),
+
+            // Recipes Label
+            Align(
+              alignment: Alignment.centerLeft,
+              child: Row(
+                children: [
+                  Icon(Icons.restaurant, size: 20),
+                  const SizedBox(width: 8),
+                  Text(
+                    "Quick Recipes",
+                    style: Theme.of(context).textTheme.headlineSmall?.copyWith(
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 8),
 
             // Recipes
             Card(
@@ -133,9 +188,12 @@ class DashboardScreen extends StatelessWidget {
               children: [
                 Expanded(
                   child: ElevatedButton(
-                    onPressed: () {},
+                    onPressed: () {
+                      onNavigateToCamera?.call();
+                    },
                     style: ElevatedButton.styleFrom(
-                        backgroundColor: Colors.green),
+                        backgroundColor: Colors.green,
+                        foregroundColor: Colors.white),
                     child: const Text("Scan Items"),
                   ),
                 ),
@@ -144,7 +202,8 @@ class DashboardScreen extends StatelessWidget {
                   child: ElevatedButton(
                     onPressed: () {},
                     style: ElevatedButton.styleFrom(
-                        backgroundColor: Colors.purple),
+                        backgroundColor: Colors.purple,
+                        foregroundColor: Colors.white),
                     child: const Text("Add to List"),
                   ),
                 ),
