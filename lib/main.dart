@@ -49,7 +49,7 @@ class _MyAppState extends State<MyApp> {
         onNavigateToRecipe: navigateToRecipe,
       ),
       const RecipeScreen(),
-      const CameraScreen(),
+      CameraScreen(onNavigateToInventory: navigateToInventory),
       InventoryScreen(
         initialLocation: inventoryLocation,
         onNavigateToCamera: navigateToCamera,

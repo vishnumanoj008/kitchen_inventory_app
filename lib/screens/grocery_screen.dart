@@ -9,39 +9,18 @@ class GroceryScreen extends StatefulWidget {
 
 class _GroceryScreenState extends State<GroceryScreen> {
 
-  List<Map<String, dynamic>> items = [
-    {
-      "id": 1,
-      "name": "Milk",
-      "number": 1,
-      "quantity": 1,
-      "unit": "L",
-      "checked": false
-    },
-  ];
+
+  List<Map<String, dynamic>> items = [];
+  final GlobalKey<AnimatedListState> _listKey = GlobalKey<AnimatedListState>();
 
   final List<String> units = ["", "g", "kg", "mg", "ml", "L"];
-  List<String> suggestions = [];
-
-  // ================= RULE ENGINE =================
-
-  void generateSuggestions() {
-    List<String> staples = [
-      "Onions",
-      "Milk",
-      "Eggs",
-      "Rice",
-      "Tomatoes"
-    ];
-
-    List<String> existing =
-        items.map((e) => e["name"].toString().toLowerCase()).toList();
-
-    suggestions = staples
-        .where((item) =>
-            !existing.contains(item.toLowerCase()))
-        .toList();
-  }
+  final List<String> suggestions = [
+    "Onions",
+    "Milk",
+    "Eggs",
+    "Rice",
+    "Tomatoes"
+  ];
 
   // ================= CORE =================
 
@@ -53,7 +32,24 @@ class _GroceryScreenState extends State<GroceryScreen> {
   }
 
   void delete(int id) {
-    setState(() => items.removeWhere((e) => e["id"] == id));
+    final index = items.indexWhere((e) => e["id"] == id);
+    if (index != -1) {
+      final removedItem = items[index];
+      setState(() {
+        items.removeAt(index);
+        _listKey.currentState?.removeItem(
+          index,
+          (context, animation) => SizeTransition(
+            sizeFactor: animation,
+            child: Card(
+              child: ListTile(
+                title: Text(removedItem["name"]),
+              ),
+            ),
+          ),
+        );
+      });
+    }
   }
 
   void deleteChecked() {
@@ -355,7 +351,6 @@ class _GroceryScreenState extends State<GroceryScreen> {
   @override
   Widget build(BuildContext context) {
 
-    generateSuggestions();
 
     int checked = items.where((e) => e["checked"]).length;
     bool allSelected =
@@ -413,50 +408,58 @@ class _GroceryScreenState extends State<GroceryScreen> {
 
             const SizedBox(height: 10),
 
-            Center(
-              child: ElevatedButton.icon(
-                onPressed: showAddDialog,
-                icon: const Icon(Icons.add),
-                label: const Text("Add Item"),
-              ),
-            ),
-
             const SizedBox(height: 10),
-
             if (suggestions.isNotEmpty)
               Card(
                 color: Colors.green.shade50,
                 child: Padding(
                   padding: const EdgeInsets.all(12),
                   child: Column(
-                    crossAxisAlignment:
-                        CrossAxisAlignment.start,
+                    crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       const Text("Smart Suggestions",
-                          style: TextStyle(
-                              fontWeight:
-                                  FontWeight.bold)),
+                          style: TextStyle(fontWeight: FontWeight.bold)),
                       const SizedBox(height: 8),
-                      ...suggestions.map((s) =>
-                          ListTile(
-                            title: Text(s),
-                            trailing: IconButton(
-                              icon: const Icon(Icons.add),
-                              onPressed: () {
-                                setState(() {
-                                  items.add({
-                                    "id": DateTime.now()
-                                        .millisecondsSinceEpoch,
+                      SingleChildScrollView(
+                        scrollDirection: Axis.horizontal,
+                        child: Row(
+                          children: suggestions.map((s) => Padding(
+                            padding: const EdgeInsets.only(right: 8),
+                            child: GestureDetector(
+                              onTap: () {
+                                if (!items.any((item) => item["name"].toString().toLowerCase() == s.toLowerCase())) {
+                                  final newItem = {
+                                    "id": DateTime.now().millisecondsSinceEpoch,
                                     "name": s,
                                     "number": 1,
                                     "quantity": 1,
                                     "unit": "",
                                     "checked": false
+                                  };
+                                  setState(() {
+                                    items.add(newItem);
+                                    _listKey.currentState?.insertItem(items.length - 1);
                                   });
-                                });
+                                }
                               },
+                              child: Container(
+                                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                                decoration: BoxDecoration(
+                                  color: Colors.green.shade200,
+                                  borderRadius: BorderRadius.circular(20),
+                                ),
+                                child: Text(
+                                  s,
+                                  style: const TextStyle(
+                                    color: Colors.white,
+                                    fontWeight: FontWeight.w500,
+                                  ),
+                                ),
+                              ),
                             ),
-                          ))
+                          )).toList(),
+                        ),
+                      ),
                     ],
                   ),
                 ),
@@ -465,44 +468,52 @@ class _GroceryScreenState extends State<GroceryScreen> {
             const SizedBox(height: 10),
 
             Expanded(
-              child: ListView(
-                children: items.map((item) {
-
-                  String subtitle =
-                      item["unit"].isEmpty
-                          ? "${item["number"]}"
-                          : "${item["number"]} x ${item["quantity"]} ${item["unit"]}";
-
-                  return Card(
-                    child: ListTile(
-                      leading: Checkbox(
-                        value: item["checked"],
-                        onChanged: (_) =>
-                            toggle(item["id"]),
-                      ),
-                      title: Text(item["name"]),
-                      subtitle: Text(subtitle),
-                      trailing: Row(
-                        mainAxisSize:
-                            MainAxisSize.min,
-                        children: [
-                          IconButton(
-                            icon:
-                                const Icon(Icons.edit),
-                            onPressed: () =>
-                                editItem(item),
-                          ),
-                          IconButton(
-                            icon:
-                                const Icon(Icons.delete),
-                            onPressed: () =>
-                                delete(item["id"]),
-                          ),
-                        ],
+              child: AnimatedList(
+                key: _listKey,
+                initialItemCount: items.length,
+                itemBuilder: (context, index, animation) {
+                  // Sort items: unchecked first, checked last
+                  final sortedItems = [...items]
+                    ..sort((a, b) => (a["checked"] ? 1 : 0) - (b["checked"] ? 1 : 0));
+                  final item = sortedItems[index];
+                  String subtitle = item["unit"].isEmpty
+                      ? "${item["number"]}"
+                      : "${item["number"]} x ${item["quantity"]} ${item["unit"]}";
+                  return SizeTransition(
+                    sizeFactor: animation,
+                    child: Card(
+                      child: ListTile(
+                        leading: Checkbox(
+                          value: item["checked"],
+                          onChanged: (_) => toggle(item["id"]),
+                        ),
+                        title: Text(item["name"]),
+                        subtitle: Text(subtitle),
+                        trailing: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            IconButton(
+                              icon: const Icon(Icons.edit),
+                              onPressed: () => editItem(item),
+                            ),
+                            IconButton(
+                              icon: const Icon(Icons.delete),
+                              onPressed: () => delete(item["id"]),
+                            ),
+                          ],
+                        ),
                       ),
                     ),
                   );
-                }).toList(),
+                },
+              ),
+            ),
+            const SizedBox(height: 10),
+            Center(
+              child: ElevatedButton.icon(
+                onPressed: showAddDialog,
+                icon: const Icon(Icons.add),
+                label: const Text("Add Item"),
               ),
             ),
           ],

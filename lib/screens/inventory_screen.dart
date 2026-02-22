@@ -1,4 +1,6 @@
 import 'package:flutter/material.dart';
+import '../models/item.dart';
+import '../data/database_helper.dart';
 
 class InventoryScreen extends StatefulWidget {
   final String initialLocation;
@@ -16,23 +18,21 @@ class InventoryScreen extends StatefulWidget {
 
 class _InventoryScreenState extends State<InventoryScreen> {
   late String activeLocation;
+  List<Item> items = [];
 
   @override
   void initState() {
     super.initState();
     activeLocation = widget.initialLocation;
+    loadItems();
   }
 
-  final fridgeItems = [
-    {"name":"Milk","qty":"1L","expiry":"2 days","cat":"Dairy","status":"warning"},
-    {"name":"Eggs","qty":"12","expiry":"1 week","cat":"Dairy","status":"good"},
-    {"name":"Spinach","qty":"200g","expiry":"1 day","cat":"Vegetables","status":"urgent"},
-  ];
-
-  final pantryItems = [
-    {"name":"Pasta","qty":"2 packs","expiry":"6 months","cat":"Grains","status":"good"},
-    {"name":"Rice","qty":"5kg","expiry":"1 year","cat":"Grains","status":"good"},
-  ];
+  Future<void> loadItems() async {
+    final loaded = await DatabaseHelper.instance.getItemsByLocation(activeLocation);
+    setState(() {
+      items = loaded;
+    });
+  }
 
   Color statusColor(String s){
     if(s=="urgent") return Colors.red;
@@ -51,31 +51,21 @@ class _InventoryScreenState extends State<InventoryScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final items = activeLocation=="fridge" ? fridgeItems : pantryItems;
-
+    // items are loaded from database
     return Scaffold(
-      appBar: AppBar(title: const Text("Inventory")),
-
-      floatingActionButton: FloatingActionButton(
-        backgroundColor: Colors.orange,
-        onPressed: showAddItemDialog,
-        child: const Icon(Icons.add),
+      appBar: AppBar(
+        title: const Text("Inventory"),
+        centerTitle: true,
       ),
-
       body: Padding(
-        padding: const EdgeInsets.all(16),
+        padding: const EdgeInsets.all(16.0),
         child: Column(
           children: [
-            // Alert
-            Card(
-              color: Colors.orange.shade50,
-              child: const ListTile(
-                leading: Icon(Icons.warning, color: Colors.orange),
-                title: Text("3 Items Expiring Soon"),
-                subtitle: Text("Check inventory to avoid waste"),
-              ),
+            // Info
+            ListTile(
+              leading: const Icon(Icons.info_outline, color: Colors.blue),
+              title: const Text("Check inventory to avoid waste"),
             ),
-
             const SizedBox(height: 16),
 
             // Search field
@@ -88,7 +78,6 @@ class _InventoryScreenState extends State<InventoryScreen> {
                 ),
               ),
             ),
-
             const SizedBox(height: 16),
 
             // Grouped Tab Container
@@ -109,6 +98,7 @@ class _InventoryScreenState extends State<InventoryScreen> {
                             child: GestureDetector(
                               onTap: () {
                                 setState(() => activeLocation = "fridge");
+                                loadItems();
                               },
                               child: Container(
                                 padding: const EdgeInsets.symmetric(vertical: 12),
@@ -136,6 +126,7 @@ class _InventoryScreenState extends State<InventoryScreen> {
                             child: GestureDetector(
                               onTap: () {
                                 setState(() => activeLocation = "pantry");
+                                loadItems();
                               },
                               child: Container(
                                 padding: const EdgeInsets.symmetric(vertical: 12),
@@ -161,13 +152,11 @@ class _InventoryScreenState extends State<InventoryScreen> {
                         ],
                       ),
                     ),
-
                     // Divider
                     Divider(
                       height: 1,
                       color: Colors.grey.shade300,
                     ),
-
                     // Item list
                     Expanded(
                       child: ListView.builder(
@@ -180,28 +169,12 @@ class _InventoryScreenState extends State<InventoryScreen> {
                               vertical: 6,
                             ),
                             child: ListTile(
-                              title: Text(item["name"].toString()),
+                              title: Text(item.name),
                               subtitle: Text(
-                                "${item["qty"]} • ${item["cat"]}",
+                                (item.category ?? "") + (item.expiry != null ? " • ${item.expiry!.toLocal().toString().split(' ')[0]}" : ""),
+                                style: TextStyle(color: Colors.grey.shade700),
                               ),
-                              trailing: Container(
-                                padding: const EdgeInsets.all(6),
-                                decoration: BoxDecoration(
-                                  borderRadius: BorderRadius.circular(8),
-                                  border: Border.all(
-                                    color:
-                                        statusColor(item["status"].toString()),
-                                  ),
-                                ),
-                                child: Text(
-                                  item["expiry"].toString(),
-                                  style: TextStyle(
-                                    color: statusColor(
-                                      item["status"].toString(),
-                                    ),
-                                  ),
-                                ),
-                              ),
+                              trailing: Text("Qty: ${item.quantity}"),
                             ),
                           );
                         },
