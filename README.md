@@ -1,16 +1,5 @@
 # kitchen_inventory_app
 
-A new Flutter project.
+This Kitchen Inventory App is a mobile application designed to simplify kitchen management by integrating artificial intelligence with an inventory tracking and recipe suggestions. The app allows users to scan food items using the device camera, identify ingredients, and manage them efficiently within a digital kitchen inventory. By using AI image recognition and structured data handling, the application reduces food waste, prevents unnecessary purchase and helps users maintain a well organized kitchen environment. Additionally it can manage grocery lists and inventory, predict expiry dates, suggest recipes based on exisiting ingredients, and more.
 
-## Getting Started
-
-This project is a starting point for a Flutter application.
-
-A few resources to get you started if this is your first Flutter project:
-
-- [Lab: Write your first Flutter app](https://docs.flutter.dev/get-started/codelab)
-- [Cookbook: Useful Flutter samples](https://docs.flutter.dev/cookbook)
-
-For help getting started with Flutter development, view the
-[online documentation](https://docs.flutter.dev/), which offers tutorials,
-samples, guidance on mobile development, and a full API reference.
+!Work in progress!
