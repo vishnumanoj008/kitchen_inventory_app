@@ -1,9 +1,123 @@
 import 'package:flutter/material.dart';
 import 'package:camera/camera.dart';
+import 'package:kitchen_inventory_app/data/database_helper.dart';
 import 'package:permission_handler/permission_handler.dart';
+import 'package:google_mlkit_image_labeling/google_mlkit_image_labeling.dart';
 import 'dart:io';
 import '../models/item.dart';
-import '../data/database_helper.dart';
+import 'package:speech_to_text/speech_to_text.dart' as stt;
+
+
+class VoiceRecognitionDialog extends StatefulWidget {
+  const VoiceRecognitionDialog({super.key});
+
+  @override
+  State<VoiceRecognitionDialog> createState() => _VoiceRecognitionDialogState();
+}
+
+class _VoiceRecognitionDialogState extends State<VoiceRecognitionDialog> {
+  late stt.SpeechToText _speechToText;
+  bool isListening = false;
+  String recognizedText = '';
+
+  @override
+  void initState() {
+    super.initState();
+    _speechToText = stt.SpeechToText();
+    _initializeSpeech();
+  }
+
+  Future<void> _initializeSpeech() async {
+    await _speechToText.initialize();
+    setState(() {});
+  }
+
+  void _startListening() async {
+    final status = await Permission.microphone.request();
+    if (!status.isGranted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Microphone permission is required for voice input')),
+      );
+      return;
+    }
+    if (!isListening && _speechToText.isAvailable) {
+      setState(() {
+        isListening = true;
+        recognizedText = '';
+      });
+      await _speechToText.listen(
+        onResult: (result) {
+          setState(() {
+            recognizedText = result.recognizedWords;
+          });
+        },
+      );
+    }
+  }
+
+  void _stopListening() async {
+    if (isListening) {
+      await _speechToText.stop();
+      setState(() {
+        isListening = false;
+      });
+    }
+  }
+
+  @override
+  void dispose() {
+    _speechToText.cancel();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: const Text('Voice Input'),
+      content: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(
+            isListening ? Icons.mic : Icons.mic_none,
+            size: 48,
+            color: isListening ? Colors.red : Colors.grey,
+          ),
+          const SizedBox(height: 16),
+          Text(
+            isListening ? 'Listening...' : 'Tap to start speaking',
+            style: const TextStyle(fontSize: 14),
+          ),
+          const SizedBox(height: 16),
+          Container(
+            padding: const EdgeInsets.all(8),
+            decoration: BoxDecoration(
+              color: Colors.grey.shade100,
+              borderRadius: BorderRadius.circular(8),
+            ),
+            child: Text(
+              recognizedText.isEmpty
+                ? (isListening ? 'Listening...' : 'No speech detected')
+                : recognizedText,
+              style: const TextStyle(fontSize: 14),
+            ),
+          ),
+        ],
+      ),
+      actions: [
+        TextButton(
+          onPressed: () {
+            Navigator.of(context).pop();
+          },
+          child: const Text('Close'),
+        ),
+        ElevatedButton(
+          onPressed: isListening ? _stopListening : _startListening,
+          child: Text(isListening ? 'Stop' : 'Start'),
+        ),
+      ],
+    );
+  }
+}
 
 class CameraScreen extends StatefulWidget {
   final void Function(String location)? onNavigateToInventory;
@@ -38,11 +152,24 @@ class _CameraScreenState extends State<CameraScreen> {
   }
 
   Future<void> detectLabelsInImage(String imagePath) async {
-    // Model inference removed
+    // Google ML Kit Image Labeling
+    final inputImage = InputImage.fromFilePath(imagePath);
+    final imageLabeler = ImageLabeler(options: ImageLabelerOptions());
+    final labels = await imageLabeler.processImage(inputImage);
+
+    String? bestLabel;
+    double bestScore = 0.0;
+    for (final label in labels) {
+      if (label.confidence > bestScore) {
+        bestScore = label.confidence;
+        bestLabel = label.label;
+      }
+    }
+
     setState(() {
-      detectedLabels = ["Apple"];
+      detectedLabels = bestLabel != null ? [bestLabel] : [];
     });
-      // ...existing code...
+    imageLabeler.close();
   }
 
   Future<void> requestCameraPermission() async {
@@ -326,7 +453,7 @@ class _CameraScreenState extends State<CameraScreen> {
               ),
             ),
           // Take Photo button
-          if (capturedImage == null)
+          if (capturedImage == null) ...[
             Container(
               padding: const EdgeInsets.all(16),
               child: SizedBox(
@@ -344,6 +471,29 @@ class _CameraScreenState extends State<CameraScreen> {
                 ),
               ),
             ),
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 16),
+              child: SizedBox(
+                width: double.infinity,
+                child: ElevatedButton(
+                  onPressed: () {
+                    showDialog(
+                      context: context,
+                      builder: (context) => const VoiceRecognitionDialog(),
+                    );
+                  },
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: Colors.blue,
+                    padding: const EdgeInsets.symmetric(vertical: 16),
+                  ),
+                  child: const Text(
+                    "Use Voice",
+                    style: TextStyle(color: Colors.white, fontSize: 16),
+                  ),
+                ),
+              ),
+            ),
+          ],
         ],
       ),
     );

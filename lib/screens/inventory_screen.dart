@@ -174,7 +174,44 @@ class _InventoryScreenState extends State<InventoryScreen> {
                                 (item.category ?? "") + (item.expiry != null ? " • ${item.expiry!.toLocal().toString().split(' ')[0]}" : ""),
                                 style: TextStyle(color: Colors.grey.shade700),
                               ),
-                              trailing: Text("Qty: ${item.quantity}"),
+                              trailing: Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  Text("Qty: ${item.quantity}"),
+                                  const SizedBox(width: 8),
+                                  IconButton(
+                                    icon: const Icon(Icons.delete, color: Colors.red),
+                                    tooltip: 'Delete Item',
+                                    onPressed: () async {
+                                      final confirm = await showDialog<bool>(
+                                        context: context,
+                                        builder: (context) => AlertDialog(
+                                          title: const Text('Delete Item'),
+                                          content: Text('Are you sure you want to delete "${item.name}"?'),
+                                          actions: [
+                                            TextButton(
+                                              onPressed: () => Navigator.pop(context, false),
+                                              child: const Text('Cancel'),
+                                            ),
+                                            ElevatedButton(
+                                              onPressed: () => Navigator.pop(context, true),
+                                              style: ElevatedButton.styleFrom(backgroundColor: Colors.red),
+                                              child: const Text('Delete'),
+                                            ),
+                                          ],
+                                        ),
+                                      );
+                                      if (confirm == true) {
+                                        await DatabaseHelper.instance.deleteItem(item.id ?? 0);
+                                        loadItems();
+                                        ScaffoldMessenger.of(context).showSnackBar(
+                                          SnackBar(content: Text('Deleted item: ${item.name}')),
+                                        );
+                                      }
+                                    },
+                                  ),
+                                ],
+                              ),
                             ),
                           );
                         },
