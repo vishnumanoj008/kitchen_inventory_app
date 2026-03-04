@@ -5,8 +5,9 @@ import 'package:permission_handler/permission_handler.dart';
 import 'package:google_mlkit_image_labeling/google_mlkit_image_labeling.dart';
 import 'dart:io';
 import '../models/item.dart';
-import 'package:speech_to_text/speech_to_text.dart' as stt;
-
+import 'package:flutter_sound/flutter_sound.dart';
+import 'package:path_provider/path_provider.dart';
+import '../services/api_service.dart';
 
 class VoiceRecognitionDialog extends StatefulWidget {
   const VoiceRecognitionDialog({super.key});
@@ -16,57 +17,162 @@ class VoiceRecognitionDialog extends StatefulWidget {
 }
 
 class _VoiceRecognitionDialogState extends State<VoiceRecognitionDialog> {
-  late stt.SpeechToText _speechToText;
-  bool isListening = false;
-  String recognizedText = '';
+  final FlutterSoundRecorder _recorder = FlutterSoundRecorder();
+  bool isRecording = false;
+  bool isProcessing = false;
+  String? audioPath;
+  bool _isRecorderInitialized = false;
 
   @override
   void initState() {
     super.initState();
-    _speechToText = stt.SpeechToText();
-    _initializeSpeech();
+    _initRecorder();
   }
 
-  Future<void> _initializeSpeech() async {
-    await _speechToText.initialize();
-    setState(() {});
-  }
-
-  void _startListening() async {
+  Future<void> _initRecorder() async {
     final status = await Permission.microphone.request();
-    if (!status.isGranted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Microphone permission is required for voice input')),
-      );
+    if (status != PermissionStatus.granted) {
       return;
     }
-    if (!isListening && _speechToText.isAvailable) {
-      setState(() {
-        isListening = true;
-        recognizedText = '';
-      });
-      await _speechToText.listen(
-        onResult: (result) {
-          setState(() {
-            recognizedText = result.recognizedWords;
-          });
-        },
+
+    await _recorder.openRecorder();
+    setState(() {
+      _isRecorderInitialized = true;
+    });
+  }
+
+  Future<void> _startRecording() async {
+    if (!_isRecorderInitialized) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Recorder not initialized')),
+        );
+      }
+      return;
+    }
+
+    try {
+      final directory = await getTemporaryDirectory();
+      audioPath = '${directory.path}/voice_input.aac';
+
+      await _recorder.startRecorder(
+        toFile: audioPath,
+        codec: Codec.aacADTS,
       );
+
+      setState(() {
+        isRecording = true;
+      });
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Error starting recording: $e')),
+        );
+      }
     }
   }
 
-  void _stopListening() async {
-    if (isListening) {
-      await _speechToText.stop();
+  Future<void> _stopRecording() async {
+    if (!isRecording) return;
+
+    try {
+      await _recorder.stopRecorder();
+      
       setState(() {
-        isListening = false;
+        isRecording = false;
       });
+
+      if (audioPath != null) {
+        await _processAudioFile(audioPath!);
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Error stopping recording: $e')),
+        );
+      }
+    }
+  }
+
+  Future<void> _processAudioFile(String path) async {
+    setState(() {
+      isProcessing = true;
+    });
+
+    try {
+      print('Processing audio file: $path');
+
+      // Always auto-classify on backend
+      final response = await ApiService.sendAudioWithLocation(path, null);
+
+      print('Got response: $response');
+
+      // Parse response and sync to local database
+      if (response['updates'] != null) {
+        List<String> messages = [];
+
+        for (var itemData in response['updates']) {
+          if (itemData['status'] == 'success') {
+            // Add/update in local SQLite database
+            final item = Item(
+              name: itemData['product'],
+              location: itemData['location'],
+              quantity: itemData['quantity'] ?? 1,
+              expiry: itemData['expiry'] != null
+                  ? DateTime.parse(itemData['expiry'])
+                  : null,
+              category: itemData['category'] ?? 'General',
+            );
+
+            await DatabaseHelper.instance.insertItem(item);
+            
+            if (itemData['message'] != null) {
+              messages.add(itemData['message']);
+            }
+          }
+        }
+
+        if (mounted) {
+          final transcription = response['transcription'] ?? '';
+          final summary = messages.join('\n');
+          
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text(
+                '🎤 Heard: "$transcription"\n\n$summary',
+              ),
+              duration: const Duration(seconds: 4),
+              backgroundColor: Colors.green,
+            ),
+          );
+          Navigator.of(context).pop(true);
+        }
+      } else {
+        throw Exception('No updates in response');
+      }
+    } catch (e) {
+      print('Error processing audio: $e');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Error: $e'),
+            duration: const Duration(seconds: 5),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
+    } finally {
+      if (mounted) {
+        setState(() {
+          isProcessing = false;
+        });
+      }
     }
   }
 
   @override
   void dispose() {
-    _speechToText.cancel();
+    _recorder.closeRecorder();
     super.dispose();
   }
 
@@ -78,41 +184,48 @@ class _VoiceRecognitionDialogState extends State<VoiceRecognitionDialog> {
         mainAxisSize: MainAxisSize.min,
         children: [
           Icon(
-            isListening ? Icons.mic : Icons.mic_none,
+            isRecording ? Icons.mic : Icons.mic_none,
             size: 48,
-            color: isListening ? Colors.red : Colors.grey,
+            color: isRecording ? Colors.red : Colors.grey,
           ),
-          const SizedBox(height: 16),
+          const SizedBox(height: 12),
+          const Text(
+            'Auto-classify is enabled',
+            style: TextStyle(fontSize: 12, color: Colors.grey),
+          ),
+          const SizedBox(height: 12),
           Text(
-            isListening ? 'Listening...' : 'Tap to start speaking',
+            isProcessing
+                ? 'Processing with Whisper...'
+                : isRecording
+                    ? 'Recording...'
+                    : 'Tap to start recording',
             style: const TextStyle(fontSize: 14),
           ),
-          const SizedBox(height: 16),
-          Container(
-            padding: const EdgeInsets.all(8),
-            decoration: BoxDecoration(
-              color: Colors.grey.shade100,
-              borderRadius: BorderRadius.circular(8),
-            ),
-            child: Text(
-              recognizedText.isEmpty
-                ? (isListening ? 'Listening...' : 'No speech detected')
-                : recognizedText,
-              style: const TextStyle(fontSize: 14),
-            ),
+          const SizedBox(height: 8),
+          const Text(
+            'Say: "add 2 apples and remove 3 oranges"',
+            style: TextStyle(fontSize: 12, color: Colors.grey),
           ),
+          if (isProcessing)
+            const Padding(
+              padding: EdgeInsets.only(top: 16),
+              child: CircularProgressIndicator(),
+            ),
         ],
       ),
       actions: [
         TextButton(
-          onPressed: () {
+          onPressed: isProcessing ? null : () {
             Navigator.of(context).pop();
           },
-          child: const Text('Close'),
+          child: const Text('Cancel'),
         ),
         ElevatedButton(
-          onPressed: isListening ? _stopListening : _startListening,
-          child: Text(isListening ? 'Stop' : 'Start'),
+          onPressed: isProcessing || !_isRecorderInitialized
+              ? null
+              : (isRecording ? _stopRecording : _startRecording),
+          child: Text(isRecording ? 'Stop & Process' : 'Start Recording'),
         ),
       ],
     );
@@ -142,17 +255,7 @@ class _CameraScreenState extends State<CameraScreen> {
     initializeCamera();
   }
 
-  @override
-  void didChangeDependencies() {
-    super.didChangeDependencies();
-  }
-
-  Future<void> initializeImageLabeler() async {
-    // Deprecated: replaced by tflite_flutter
-  }
-
   Future<void> detectLabelsInImage(String imagePath) async {
-    // Google ML Kit Image Labeling
     final inputImage = InputImage.fromFilePath(imagePath);
     final imageLabeler = ImageLabeler(options: ImageLabelerOptions());
     final labels = await imageLabeler.processImage(inputImage);
@@ -179,7 +282,6 @@ class _CameraScreenState extends State<CameraScreen> {
 
   Future<void> initializeCamera() async {
     try {
-      // Request camera permission
       await requestCameraPermission();
 
       cameras = await availableCameras();
@@ -188,7 +290,7 @@ class _CameraScreenState extends State<CameraScreen> {
       if (cameras != null && cameras!.isNotEmpty) {
         _cameraController = CameraController(
           cameras![0],
-          ResolutionPreset.high,
+          ResolutionPreset.medium,
           enableAudio: false,
         );
         await _cameraController!.initialize();
@@ -227,10 +329,8 @@ class _CameraScreenState extends State<CameraScreen> {
         capturedImage = photo;
       });
 
-      // Run ML Kit image labeling on the captured image
       await detectLabelsInImage(photo.path);
 
-      // Auto-dismiss preview after 3 seconds
       Future.delayed(const Duration(seconds: 3), () {
         if (mounted && capturedImage != null) {
           resetCamera();
@@ -269,7 +369,7 @@ class _CameraScreenState extends State<CameraScreen> {
           child: Column(
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
-              Icon(Icons.block, size: 64, color: Colors.grey),
+              const Icon(Icons.block, size: 64, color: Colors.grey),
               const SizedBox(height: 16),
               Text(
                 errorMessage!,
@@ -308,7 +408,6 @@ class _CameraScreenState extends State<CameraScreen> {
             child: Stack(
               fit: StackFit.expand,
               children: [
-                // Live camera feed - 9:16 aspect ratio container
                 Center(
                   child: Container(
                     width: 270,
@@ -327,7 +426,6 @@ class _CameraScreenState extends State<CameraScreen> {
                     ),
                   ),
                 ),
-                // Rectangle overlay (9:16 aspect ratio)
                 Center(
                   child: Container(
                     width: 270,
@@ -341,7 +439,6 @@ class _CameraScreenState extends State<CameraScreen> {
               ],
             ),
           ),
-          // Captured photo preview info
           if (capturedImage != null)
             Container(
               padding: const EdgeInsets.all(16),
@@ -350,7 +447,6 @@ class _CameraScreenState extends State<CameraScreen> {
                 child: Column(
                   children: [
                     const SizedBox(height: 8),
-                    // Detected labels section
                     if (detectedLabels.isNotEmpty)
                       Container(
                         padding: const EdgeInsets.all(8),
@@ -427,7 +523,6 @@ class _CameraScreenState extends State<CameraScreen> {
                                 );
                                 widget.onNavigateToInventory?.call('fridge');
                               } catch (e) {
-                                print('Error inserting item from camera: $e');
                                 if (mounted) {
                                   messenger.showSnackBar(
                                     const SnackBar(
@@ -452,7 +547,6 @@ class _CameraScreenState extends State<CameraScreen> {
                 ),
               ),
             ),
-          // Take Photo button
           if (capturedImage == null) ...[
             Container(
               padding: const EdgeInsets.all(16),
@@ -476,11 +570,15 @@ class _CameraScreenState extends State<CameraScreen> {
               child: SizedBox(
                 width: double.infinity,
                 child: ElevatedButton(
-                  onPressed: () {
-                    showDialog(
+                  onPressed: () async {
+                    final result = await showDialog<bool>(
                       context: context,
                       builder: (context) => const VoiceRecognitionDialog(),
                     );
+                    
+                    if (result == true && mounted) {
+                      widget.onNavigateToInventory?.call('fridge');
+                    }
                   },
                   style: ElevatedButton.styleFrom(
                     backgroundColor: Colors.blue,

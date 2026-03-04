@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
+import '../models/item.dart';
+import '../data/database_helper.dart';
 
-class DashboardScreen extends StatelessWidget {
+class DashboardScreen extends StatefulWidget {
   final Function(String)? onNavigateToInventory;
   final VoidCallback? onNavigateToCamera;
   final VoidCallback? onNavigateToRecipe;
@@ -13,16 +15,47 @@ class DashboardScreen extends StatelessWidget {
   });
 
   @override
+  State<DashboardScreen> createState() => _DashboardScreenState();
+}
+
+class _DashboardScreenState extends State<DashboardScreen> {
+  List<Item> expiringItems = [];
+  int fridgeCount = 0;
+  int pantryCount = 0;
+
+  @override
+  void initState() {
+    super.initState();
+    loadData();
+  }
+
+  Future<void> loadData() async {
+    final fridgeItems = await DatabaseHelper.instance.getItemsByLocation("fridge");
+    final pantryItems = await DatabaseHelper.instance.getItemsByLocation("pantry");
+
+    final now = DateTime.now();
+    final limit = now.add(const Duration(days: 7));
+
+    final expiring = [...fridgeItems, ...pantryItems]
+        .where((item) =>
+            item.expiry != null &&
+            item.expiry!.isAfter(now) &&
+            item.expiry!.isBefore(limit))
+        .toList()
+      ..sort((a, b) => a.expiry!.compareTo(b.expiry!)); // lowest days left first
+
+    setState(() {
+      fridgeCount = fridgeItems.length;
+      pantryCount = pantryItems.length;
+      expiringItems = expiring.take(3).toList(); // max 3 items
+    });
+  }
+
+  @override
   Widget build(BuildContext context) {
     final quickStats = [
-      {"label": "Fridge Items", "value": "24", "color": Colors.blue},
-      {"label": "Pantry Items", "value": "38", "color": Colors.green},
-    ];
-
-    final expiringItems = [
-      {"name": "Milk", "location": "Fridge", "days": 2},
-      {"name": "Spinach", "location": "Fridge", "days": 1},
-      {"name": "Yogurt", "location": "Fridge", "days": 3},
+      {"label": "Fridge Items", "value": fridgeCount.toString(), "color": Colors.blue},
+      {"label": "Pantry Items", "value": pantryCount.toString(), "color": Colors.green},
     ];
 
     final recipes = [
@@ -63,7 +96,7 @@ class DashboardScreen extends StatelessWidget {
                   const SizedBox(height: 12),
                   ElevatedButton(
                     onPressed: () {
-                      onNavigateToRecipe?.call();
+                      widget.onNavigateToRecipe?.call();
                     },
                     child: const Text("View Recipe"),
                   ),
@@ -90,9 +123,9 @@ class DashboardScreen extends StatelessWidget {
                 return GestureDetector(
                   onTap: () {
                     if (stat["label"] == "Fridge Items") {
-                      onNavigateToInventory?.call("fridge");
+                      widget.onNavigateToInventory?.call("fridge");
                     } else if (stat["label"] == "Pantry Items") {
-                      onNavigateToInventory?.call("pantry");
+                      widget.onNavigateToInventory?.call("pantry");
                     }
                   },
                   child: Card(
@@ -136,17 +169,23 @@ class DashboardScreen extends StatelessWidget {
             ),
             const SizedBox(height: 8),
 
-            // Expiring Items
+            // Expiring Items - NOW FROM DATABASE
             Card(
-              child: Column(
-                children: expiringItems.map((item) {
-                  return ListTile(
-                    title: Text(item["name"].toString()),
-                    subtitle: Text(item["location"].toString()),
-                    trailing: Text("${item["days"]}d left"),
-                  );
-                }).toList(),
-              ),
+              child: expiringItems.isEmpty
+                  ? Padding(
+                      padding: const EdgeInsets.all(16),
+                      child: Text("No items expiring soon!", style: TextStyle(color: Colors.grey.shade600)),
+                    )
+                  : Column(
+                      children: expiringItems.map((item) {
+                        final daysLeft = item.expiry!.difference(DateTime.now()).inDays;
+                        return ListTile(
+                          title: Text(item.name),
+                          subtitle: Text(item.location ?? ""),
+                          trailing: Text("${daysLeft}d left"),
+                        );
+                      }).toList(),
+                    ),
             ),
 
             const SizedBox(height: 20),
@@ -184,31 +223,33 @@ class DashboardScreen extends StatelessWidget {
             const SizedBox(height: 20),
 
             // Quick Actions
-            Row(
-              children: [
-                Expanded(
-                  child: ElevatedButton(
-                    onPressed: () {
-                      onNavigateToCamera?.call();
-                    },
-                    style: ElevatedButton.styleFrom(
-                        backgroundColor: Colors.green,
-                        foregroundColor: Colors.white),
-                    child: const Text("Scan Items"),
-                  ),
-                ),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: ElevatedButton(
-                    onPressed: () {},
-                    style: ElevatedButton.styleFrom(
-                        backgroundColor: Colors.purple,
-                        foregroundColor: Colors.white),
-                    child: const Text("Add to List"),
-                  ),
-                ),
-              ],
-            ),
+            // REMOVED:
+            // Row(
+            //   children: [
+            //     Expanded(
+            //       child: ElevatedButton(
+            //         onPressed: () {
+            //           widget.onNavigateToCamera?.call();
+            //         },
+            //         style: ElevatedButton.styleFrom(
+            //             backgroundColor: Colors.green,
+            //             foregroundColor: Colors.white),
+            //         child: const Text("Scan Items"),
+            //       ),
+            //     ),
+            //     const SizedBox(width: 12),
+            //     Expanded(
+            //       child: ElevatedButton(
+            //         onPressed: () {},
+            //         style: ElevatedButton.styleFrom(
+            //             backgroundColor: Colors.purple,
+            //             foregroundColor: Colors.white),
+            //         child: const Text("Add to List"),
+            //       ),
+            //     ),
+            //   ],
+            // ),
+
           ],
         ),
       ),

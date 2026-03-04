@@ -1,4 +1,6 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_local_notifications/flutter_local_notifications.dart';
+import 'package:permission_handler/permission_handler.dart';
 import '../models/item.dart';
 import '../data/database_helper.dart';
 
@@ -19,12 +21,124 @@ class InventoryScreen extends StatefulWidget {
 class _InventoryScreenState extends State<InventoryScreen> {
   late String activeLocation;
   List<Item> items = [];
+  
+  final FlutterLocalNotificationsPlugin _notifications =
+      FlutterLocalNotificationsPlugin();
 
   @override
   void initState() {
     super.initState();
     activeLocation = widget.initialLocation;
+    _initNotifications();
     loadItems();
+  }
+
+  Future<void> _initNotifications() async {
+    // Request notification permission (Android 13+)
+    final status = await Permission.notification.request();
+    if (status.isDenied) {
+      print('Notification permission denied');
+      return;
+    }
+
+    const androidSettings = AndroidInitializationSettings('@mipmap/ic_launcher');
+    const initSettings = InitializationSettings(android: androidSettings);
+    
+    final initialized = await _notifications.initialize(
+      initSettings,
+      onDidReceiveNotificationResponse: (NotificationResponse response) {
+        print('Notification tapped: ${response.payload}');
+      },
+    );
+
+    if (initialized == true) {
+      print('Notifications initialized successfully');
+    } else {
+      print('Failed to initialize notifications');
+    }
+
+    // Create notification channel for Android 8.0+
+    const androidChannel = AndroidNotificationChannel(
+      'inventory_expiry_channel',
+      'Inventory Expiry',
+      description: 'Notifications for inventory item expiry',
+      importance: Importance.high,
+      playSound: true,
+      enableVibration: true,
+    );
+
+    await _notifications
+        .resolvePlatformSpecificImplementation<AndroidFlutterLocalNotificationsPlugin>()
+        ?.createNotificationChannel(androidChannel);
+  }
+
+  int _daysUntilExpiry(DateTime? expiry) {
+    if (expiry == null) return -9999;
+    final now = DateTime.now();
+    final today = DateTime(now.year, now.month, now.day);
+    final exp = DateTime(expiry.year, expiry.month, expiry.day);
+    return exp.difference(today).inDays;
+  }
+
+  Future<void> _notifyItemExpiry(Item item) async {
+    final days = _daysUntilExpiry(item.expiry);
+
+    String body;
+    if (item.expiry == null) {
+      body = 'No expiry date set.';
+    } else if (days < 0) {
+      body = 'This item expired ${-days} day${-days == 1 ? '' : 's'} ago.';
+    } else if (days == 0) {
+      body = 'This item expires today!';
+    } else if (days == 1) {
+      body = 'This item will expire in 1 day.';
+    } else {
+      body = 'This item will expire in $days days.';
+    }
+
+    const androidDetails = AndroidNotificationDetails(
+      'inventory_expiry_channel',
+      'Inventory Expiry',
+      channelDescription: 'Notifications for inventory item expiry',
+      importance: Importance.high,
+      priority: Priority.high,
+      icon: '@mipmap/ic_launcher',
+      playSound: true,
+      enableVibration: true,
+      showWhen: true,
+    );
+
+    try {
+      await _notifications.show(
+        item.id ?? item.name.hashCode,
+        '${item.name} - Expiry Reminder',
+        body,
+        const NotificationDetails(android: androidDetails),
+      );
+
+      print('Notification sent for ${item.name}');
+
+      // Show snackbar confirmation
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('📱 Notification sent for ${item.name}'),
+            duration: const Duration(seconds: 2),
+            backgroundColor: Colors.green,
+          ),
+        );
+      }
+    } catch (e) {
+      print('Error sending notification: $e');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Failed to send notification: $e'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
+    }
   }
 
   Future<void> loadItems() async {
@@ -32,6 +146,20 @@ class _InventoryScreenState extends State<InventoryScreen> {
     setState(() {
       items = loaded;
     });
+  }
+
+  String _formatExpiry(DateTime? expiry) {
+    if (expiry == null) return "No expiry";
+
+    final now = DateTime.now();
+    final today = DateTime(now.year, now.month, now.day);
+    final exp = DateTime(expiry.year, expiry.month, expiry.day);
+    final daysLeft = exp.difference(today).inDays;
+
+    if (daysLeft < 0) return "Expired";
+    if (daysLeft == 0) return "Today";
+    if (daysLeft == 1) return "1 day";
+    return "$daysLeft days";
   }
 
   Color statusColor(String s){
@@ -51,7 +179,6 @@ class _InventoryScreenState extends State<InventoryScreen> {
 
   @override
   Widget build(BuildContext context) {
-    // items are loaded from database
     return Scaffold(
       appBar: AppBar(
         title: const Text("Inventory"),
@@ -61,14 +188,14 @@ class _InventoryScreenState extends State<InventoryScreen> {
         padding: const EdgeInsets.all(16.0),
         child: Column(
           children: [
-            // Info
             ListTile(
               leading: const Icon(Icons.info_outline, color: Colors.blue),
               title: const Text("Check inventory to avoid waste"),
+              subtitle: const Text("Double-tap items for expiry reminder", 
+                style: TextStyle(fontSize: 12, color: Colors.grey)),
             ),
             const SizedBox(height: 16),
 
-            // Search field
             TextField(
               decoration: InputDecoration(
                 hintText: "Search ${activeLocation == 'fridge' ? 'fridge' : 'pantry'}...",
@@ -80,7 +207,6 @@ class _InventoryScreenState extends State<InventoryScreen> {
             ),
             const SizedBox(height: 16),
 
-            // Grouped Tab Container
             Expanded(
               child: Container(
                 decoration: BoxDecoration(
@@ -89,7 +215,6 @@ class _InventoryScreenState extends State<InventoryScreen> {
                 ),
                 child: Column(
                   children: [
-                    // Tab buttons at top
                     Padding(
                       padding: const EdgeInsets.all(12),
                       child: Row(
@@ -152,65 +277,68 @@ class _InventoryScreenState extends State<InventoryScreen> {
                         ],
                       ),
                     ),
-                    // Divider
                     Divider(
                       height: 1,
                       color: Colors.grey.shade300,
                     ),
-                    // Item list
                     Expanded(
                       child: ListView.builder(
                         itemCount: items.length,
                         itemBuilder: (_, i) {
                           final item = items[i];
-                          return Card(
-                            margin: const EdgeInsets.symmetric(
-                              horizontal: 12,
-                              vertical: 6,
-                            ),
-                            child: ListTile(
-                              title: Text(item.name),
-                              subtitle: Text(
-                                (item.category ?? "") + (item.expiry != null ? " • ${item.expiry!.toLocal().toString().split(' ')[0]}" : ""),
-                                style: TextStyle(color: Colors.grey.shade700),
+                          return GestureDetector(
+                            onDoubleTap: () => _notifyItemExpiry(item),
+                            child: Card(
+                              margin: const EdgeInsets.symmetric(
+                                horizontal: 12,
+                                vertical: 6,
                               ),
-                              trailing: Row(
-                                mainAxisSize: MainAxisSize.min,
-                                children: [
-                                  Text("Qty: ${item.quantity}"),
-                                  const SizedBox(width: 8),
-                                  IconButton(
-                                    icon: const Icon(Icons.delete, color: Colors.red),
-                                    tooltip: 'Delete Item',
-                                    onPressed: () async {
-                                      final confirm = await showDialog<bool>(
-                                        context: context,
-                                        builder: (context) => AlertDialog(
-                                          title: const Text('Delete Item'),
-                                          content: Text('Are you sure you want to delete "${item.name}"?'),
-                                          actions: [
-                                            TextButton(
-                                              onPressed: () => Navigator.pop(context, false),
-                                              child: const Text('Cancel'),
-                                            ),
-                                            ElevatedButton(
-                                              onPressed: () => Navigator.pop(context, true),
-                                              style: ElevatedButton.styleFrom(backgroundColor: Colors.red),
-                                              child: const Text('Delete'),
-                                            ),
-                                          ],
-                                        ),
-                                      );
-                                      if (confirm == true) {
-                                        await DatabaseHelper.instance.deleteItem(item.id ?? 0);
-                                        loadItems();
-                                        ScaffoldMessenger.of(context).showSnackBar(
-                                          SnackBar(content: Text('Deleted item: ${item.name}')),
+                              child: ListTile(
+                                title: Text(item.name),
+                                subtitle: Text(
+                                  "${item.category ?? "General"} • Expires in: ${_formatExpiry(item.expiry)}",
+                                  style: TextStyle(color: Colors.grey.shade700),
+                                ),
+                                trailing: Row(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    Text("Qty: ${item.quantity}"),
+                                    const SizedBox(width: 8),
+                                    IconButton(
+                                      icon: const Icon(Icons.delete, color: Colors.red),
+                                      tooltip: 'Delete Item',
+                                      onPressed: () async {
+                                        final confirm = await showDialog<bool>(
+                                          context: context,
+                                          builder: (context) => AlertDialog(
+                                            title: const Text('Delete Item'),
+                                            content: Text('Are you sure you want to delete "${item.name}"?'),
+                                            actions: [
+                                              TextButton(
+                                                onPressed: () => Navigator.pop(context, false),
+                                                child: const Text('Cancel'),
+                                              ),
+                                              ElevatedButton(
+                                                onPressed: () => Navigator.pop(context, true),
+                                                style: ElevatedButton.styleFrom(backgroundColor: Colors.red),
+                                                child: const Text('Delete'),
+                                              ),
+                                            ],
+                                          ),
                                         );
-                                      }
-                                    },
-                                  ),
-                                ],
+                                        if (confirm == true) {
+                                          await DatabaseHelper.instance.deleteItem(item.id ?? 0);
+                                          loadItems();
+                                          if (mounted) {
+                                            ScaffoldMessenger.of(context).showSnackBar(
+                                              SnackBar(content: Text('Deleted item: ${item.name}')),
+                                            );
+                                          }
+                                        }
+                                      },
+                                    ),
+                                  ],
+                                ),
                               ),
                             ),
                           );
@@ -227,6 +355,7 @@ class _InventoryScreenState extends State<InventoryScreen> {
     );
   }
 }
+
 class AddItemDialog extends StatelessWidget {
   final VoidCallback? onNavigateToCamera;
 
@@ -328,6 +457,34 @@ class _ManualEntryDialogState extends State<ManualEntryDialog> {
   late TextEditingController expiryNumberController;
   String selectedLocation = "Fridge";
   String selectedTimeUnit = "Days";
+
+  DateTime? selectedExpiryDate;
+  TimeOfDay? selectedExpiryTime;
+
+  DateTime _combine(DateTime d, TimeOfDay t) {
+    return DateTime(d.year, d.month, d.day, t.hour, t.minute);
+  }
+
+  Future<void> _pickExpiryDateTime() async {
+    final d = await showDatePicker(
+      context: context,
+      firstDate: DateTime.now(),
+      lastDate: DateTime(2100),
+      initialDate: DateTime.now(),
+    );
+    if (d == null) return;
+
+    final t = await showTimePicker(
+      context: context,
+      initialTime: TimeOfDay.now(),
+    );
+    if (t == null) return;
+
+    setState(() {
+      selectedExpiryDate = d;
+      selectedExpiryTime = t;
+    });
+  }
 
   @override
   void initState() {
@@ -436,9 +593,51 @@ class _ManualEntryDialogState extends State<ManualEntryDialog> {
           child: const Text("Cancel"),
         ),
         ElevatedButton(
-          onPressed: () {
-            // TODO: Add item to inventory
-            Navigator.pop(context);
+          onPressed: () async {
+            final name = nameController.text.trim();
+            final expiryNum = int.tryParse(expiryNumberController.text) ?? 0;
+            
+            if (name.isEmpty || expiryNum <= 0) {
+              ScaffoldMessenger.of(context).showSnackBar(
+                const SnackBar(content: Text('Please fill all fields')),
+              );
+              return;
+            }
+
+            // Calculate expiry based on unit
+            DateTime expiryDate = DateTime.now();
+            if (selectedTimeUnit == "Days") {
+              expiryDate = expiryDate.add(Duration(days: expiryNum));
+            } else if (selectedTimeUnit == "Months") {
+              expiryDate = DateTime(
+                expiryDate.year,
+                expiryDate.month + expiryNum,
+                expiryDate.day,
+              );
+            } else if (selectedTimeUnit == "Years") {
+              expiryDate = DateTime(
+                expiryDate.year + expiryNum,
+                expiryDate.month,
+                expiryDate.day,
+              );
+            }
+
+            await DatabaseHelper.instance.insertItem(
+              Item(
+                name: name,
+                location: selectedLocation.toLowerCase(),
+                expiry: expiryDate,
+                quantity: 1,
+                category: "General",
+              ),
+            );
+
+            if (context.mounted) {
+              Navigator.pop(context, true);
+              ScaffoldMessenger.of(context).showSnackBar(
+                SnackBar(content: Text('Added $name')),
+              );
+            }
           },
           child: const Text("Add Item"),
         ),
