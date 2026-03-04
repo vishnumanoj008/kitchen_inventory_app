@@ -1,6 +1,9 @@
 # Miscellaneous
 *.class
 *.log
+venv/
+backend/venv/
+__pycache__/
 *.pyc
 *.swp
 .DS_Store
