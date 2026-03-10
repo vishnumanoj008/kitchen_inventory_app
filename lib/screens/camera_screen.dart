@@ -3,6 +3,8 @@ import 'package:camera/camera.dart';
 import 'package:kitchen_inventory_app/data/database_helper.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:google_mlkit_image_labeling/google_mlkit_image_labeling.dart';
+import 'package:http/http.dart' as http;
+import 'dart:convert';
 import 'dart:io';
 import '../models/item.dart';
 import 'package:flutter_sound/flutter_sound.dart';
@@ -102,18 +104,15 @@ class _VoiceRecognitionDialogState extends State<VoiceRecognitionDialog> {
     try {
       print('Processing audio file: $path');
 
-      // Always auto-classify on backend
       final response = await ApiService.sendAudioWithLocation(path, null);
 
       print('Got response: $response');
 
-      // Parse response and sync to local database
       if (response['updates'] != null) {
         List<String> messages = [];
 
         for (var itemData in response['updates']) {
           if (itemData['status'] == 'success') {
-            // Add/update in local SQLite database
             final item = Item(
               name: itemData['product'],
               location: itemData['location'],
@@ -247,32 +246,14 @@ class _CameraScreenState extends State<CameraScreen> {
   XFile? capturedImage;
   bool isLoading = true;
   String? errorMessage;
-  List<String> detectedLabels = [];
+  List<DetectedItem> detectedItems = [];
+  bool isDetecting = false;
+  String detectionMethod = 'hybrid'; // 'mlkit', 'backend', or 'hybrid'
 
   @override
   void initState() {
     super.initState();
     initializeCamera();
-  }
-
-  Future<void> detectLabelsInImage(String imagePath) async {
-    final inputImage = InputImage.fromFilePath(imagePath);
-    final imageLabeler = ImageLabeler(options: ImageLabelerOptions());
-    final labels = await imageLabeler.processImage(inputImage);
-
-    String? bestLabel;
-    double bestScore = 0.0;
-    for (final label in labels) {
-      if (label.confidence > bestScore) {
-        bestScore = label.confidence;
-        bestLabel = label.label;
-      }
-    }
-
-    setState(() {
-      detectedLabels = bestLabel != null ? [bestLabel] : [];
-    });
-    imageLabeler.close();
   }
 
   Future<void> requestCameraPermission() async {
@@ -290,7 +271,7 @@ class _CameraScreenState extends State<CameraScreen> {
       if (cameras != null && cameras!.isNotEmpty) {
         _cameraController = CameraController(
           cameras![0],
-          ResolutionPreset.medium,
+          ResolutionPreset.high, // Increased to high for better detection
           enableAudio: false,
         );
         await _cameraController!.initialize();
@@ -318,6 +299,169 @@ class _CameraScreenState extends State<CameraScreen> {
     }
   }
 
+  // Enhanced ML Kit detection with better filtering
+  Future<List<DetectedItem>> detectWithMLKit(String imagePath) async {
+    try {
+      final inputImage = InputImage.fromFilePath(imagePath);
+      final imageLabeler = ImageLabeler(
+        options: ImageLabelerOptions(
+          confidenceThreshold: 0.4, // Lowered threshold for more detections
+        ),
+      );
+      final labels = await imageLabeler.processImage(inputImage);
+
+      // Common food-related keywords to prioritize
+      final foodKeywords = [
+        'food', 'fruit', 'vegetable', 'produce', 'apple', 'banana', 'orange',
+        'tomato', 'carrot', 'potato', 'onion', 'garlic', 'bread', 'milk',
+        'cheese', 'egg', 'meat', 'chicken', 'fish', 'beverage', 'drink',
+        'bottle', 'can', 'package', 'container', 'bowl', 'plate', 'dish',
+        'ingredient', 'snack', 'meal', 'cuisine', 'natural', 'fresh',
+        'organic', 'dairy', 'grain', 'spice', 'herb', 'baked', 'cooked'
+      ];
+
+      List<DetectedItem> items = [];
+      for (final label in labels) {
+        if (label.confidence > 0.4) {
+          // Check if label contains food-related keywords
+          bool isFoodRelated = foodKeywords.any((keyword) =>
+              label.label.toLowerCase().contains(keyword));
+          
+          items.add(DetectedItem(
+            name: label.label,
+            confidence: label.confidence,
+            source: 'ML Kit',
+            isFoodRelated: isFoodRelated,
+          ));
+        }
+      }
+
+      // Sort by food-related first, then by confidence
+      items.sort((a, b) {
+        if (a.isFoodRelated && !b.isFoodRelated) return -1;
+        if (!a.isFoodRelated && b.isFoodRelated) return 1;
+        return b.confidence.compareTo(a.confidence);
+      });
+
+      imageLabeler.close();
+      return items.take(10).toList(); // Return top 10
+    } catch (e) {
+      debugPrint("ML Kit error: $e");
+      return [];
+    }
+  }
+
+  // Backend API detection using image
+  Future<List<DetectedItem>> detectWithBackend(String imagePath) async {
+    try {
+      final file = File(imagePath);
+      if (!await file.exists()) {
+        debugPrint("Image file doesn't exist");
+        return [];
+      }
+
+      var request = http.MultipartRequest(
+        'POST',
+        Uri.parse('${ApiService.baseUrl}/detect-image'),
+      );
+      request.files.add(await http.MultipartFile.fromPath('file', imagePath));
+
+      var streamedResponse = await request.send().timeout(
+        const Duration(seconds: 15),
+      );
+      var response = await http.Response.fromStream(streamedResponse);
+
+      if (response.statusCode == 200) {
+        final data = json.decode(response.body);
+        List<DetectedItem> items = [];
+        
+        if (data['items'] != null) {
+          for (var item in data['items']) {
+            items.add(DetectedItem(
+              name: item['name'] ?? item['label'],
+              confidence: (item['confidence'] ?? 0.0).toDouble(),
+              source: 'Backend AI',
+              isFoodRelated: true,
+            ));
+          }
+        }
+        return items;
+      } else {
+        debugPrint("Backend detection failed: ${response.statusCode}");
+        return [];
+      }
+    } catch (e) {
+      debugPrint("Backend detection error: $e");
+      return [];
+    }
+  }
+
+  // Hybrid detection: combine both methods
+  Future<List<DetectedItem>> detectHybrid(String imagePath) async {
+    try {
+      // Run both detections in parallel
+      final results = await Future.wait([
+        detectWithMLKit(imagePath),
+        detectWithBackend(imagePath),
+      ]);
+
+      final mlkitItems = results[0];
+      final backendItems = results[1];
+
+      // Combine results, prioritizing backend
+      List<DetectedItem> combined = [...backendItems];
+      
+      // Add ML Kit items that aren't duplicates
+      for (var mlItem in mlkitItems) {
+        bool isDuplicate = combined.any((item) =>
+            item.name.toLowerCase() == mlItem.name.toLowerCase());
+        if (!isDuplicate) {
+          combined.add(mlItem);
+        }
+      }
+
+      return combined.take(10).toList();
+    } catch (e) {
+      debugPrint("Hybrid detection error: $e");
+      // Fallback to ML Kit only
+      return await detectWithMLKit(imagePath);
+    }
+  }
+
+  Future<void> detectItems(String imagePath) async {
+    setState(() {
+      detectedItems = [];
+      isDetecting = true;
+    });
+
+    List<DetectedItem> items = [];
+    
+    try {
+      switch (detectionMethod) {
+        case 'mlkit':
+          items = await detectWithMLKit(imagePath);
+          break;
+        case 'backend':
+          items = await detectWithBackend(imagePath);
+          break;
+        case 'hybrid':
+          items = await detectHybrid(imagePath);
+          break;
+      }
+    } catch (e) {
+      debugPrint("Detection error: $e");
+      // Fallback to ML Kit
+      items = await detectWithMLKit(imagePath);
+    }
+
+    if (mounted) {
+      setState(() {
+        detectedItems = items;
+        isDetecting = false;
+      });
+    }
+  }
+
   Future<void> takePhoto() async {
     if (_cameraController == null || !_cameraController!.value.isInitialized) {
       return;
@@ -329,21 +473,22 @@ class _CameraScreenState extends State<CameraScreen> {
         capturedImage = photo;
       });
 
-      await detectLabelsInImage(photo.path);
-
-      Future.delayed(const Duration(seconds: 3), () {
-        if (mounted && capturedImage != null) {
-          resetCamera();
-        }
-      });
+      // Start detection
+      await detectItems(photo.path);
     } catch (e) {
       debugPrint("Error taking photo: $e");
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Error taking photo: $e')),
+        );
+      }
     }
   }
 
   void resetCamera() {
     setState(() {
       capturedImage = null;
+      detectedItems = [];
     });
   }
 
@@ -401,7 +546,37 @@ class _CameraScreenState extends State<CameraScreen> {
     }
 
     return Scaffold(
-      appBar: AppBar(title: const Text("Scan Camera")),
+      appBar: AppBar(
+        title: const Text("Scan Camera"),
+        actions: [
+          PopupMenuButton<String>(
+            icon: const Icon(Icons.settings),
+            initialValue: detectionMethod,
+            onSelected: (String value) {
+              setState(() {
+                detectionMethod = value;
+              });
+              if (capturedImage != null) {
+                detectItems(capturedImage!.path);
+              }
+            },
+            itemBuilder: (context) => [
+              const PopupMenuItem(
+                value: 'mlkit',
+                child: Text('ML Kit Only'),
+              ),
+              const PopupMenuItem(
+                value: 'backend',
+                child: Text('Backend AI'),
+              ),
+              const PopupMenuItem(
+                value: 'hybrid',
+                child: Text('Hybrid (Best)'),
+              ),
+            ],
+          ),
+        ],
+      ),
       body: Column(
         children: [
           Expanded(
@@ -409,47 +584,74 @@ class _CameraScreenState extends State<CameraScreen> {
               fit: StackFit.expand,
               children: [
                 Center(
-                  child: Container(
-                    width: 270,
-                    height: 480,
-                    decoration: BoxDecoration(
-                      borderRadius: BorderRadius.circular(12),
-                    ),
-                    child: ClipRRect(
-                      borderRadius: BorderRadius.circular(9),
-                      child: capturedImage == null
-                          ? CameraPreview(_cameraController!)
-                          : Image.file(
-                              File(capturedImage!.path),
-                              fit: BoxFit.cover,
-                            ),
-                    ),
+                  child: AspectRatio(
+                    aspectRatio: _cameraController!.value.aspectRatio,
+                    child: capturedImage == null
+                        ? CameraPreview(_cameraController!)
+                        : Image.file(
+                            File(capturedImage!.path),
+                            fit: BoxFit.contain,
+                          ),
                   ),
                 ),
-                Center(
-                  child: Container(
-                    width: 270,
-                    height: 480,
-                    decoration: BoxDecoration(
-                      border: Border.all(color: Colors.orange, width: 3),
-                      borderRadius: BorderRadius.circular(12),
+                if (isDetecting)
+                  Center(
+                    child: Container(
+                      padding: const EdgeInsets.all(20),
+                      decoration: BoxDecoration(
+                        color: Colors.black.withOpacity(0.7),
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                      child: const Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          CircularProgressIndicator(color: Colors.white),
+                          SizedBox(height: 12),
+                          Text(
+                            'Detecting items...',
+                            style: TextStyle(color: Colors.white),
+                          ),
+                        ],
+                      ),
                     ),
                   ),
-                ),
               ],
             ),
           ),
           if (capturedImage != null)
             Container(
+              constraints: const BoxConstraints(maxHeight: 300),
               padding: const EdgeInsets.all(16),
               color: Colors.grey.shade100,
               child: SingleChildScrollView(
                 child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
+                    Row(
+                      children: [
+                        Text(
+                          'Method: ${detectionMethod.toUpperCase()}',
+                          style: const TextStyle(
+                            fontSize: 10,
+                            color: Colors.grey,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                        const Spacer(),
+                        if (detectedItems.isNotEmpty)
+                          Text(
+                            '${detectedItems.length} items found',
+                            style: const TextStyle(
+                              fontSize: 10,
+                              color: Colors.grey,
+                            ),
+                          ),
+                      ],
+                    ),
                     const SizedBox(height: 8),
-                    if (detectedLabels.isNotEmpty)
+                    if (detectedItems.isNotEmpty)
                       Container(
-                        padding: const EdgeInsets.all(8),
+                        padding: const EdgeInsets.all(12),
                         decoration: BoxDecoration(
                           color: Colors.white,
                           borderRadius: BorderRadius.circular(8),
@@ -459,85 +661,90 @@ class _CameraScreenState extends State<CameraScreen> {
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
                             const Text(
-                              "Detected Item:",
+                              "Detected Items:",
                               style: TextStyle(
-                                fontSize: 12,
+                                fontSize: 14,
                                 fontWeight: FontWeight.bold,
                                 color: Colors.blue,
                               ),
                             ),
-                            const SizedBox(height: 4),
-                            Text(
-                              detectedLabels.first,
-                              style: const TextStyle(fontSize: 12),
-                            ),
+                            const SizedBox(height: 8),
+                            ...detectedItems.take(5).map((item) => Padding(
+                              padding: const EdgeInsets.symmetric(vertical: 4),
+                              child: Row(
+                                children: [
+                                  Expanded(
+                                    child: Column(
+                                      crossAxisAlignment: CrossAxisAlignment.start,
+                                      children: [
+                                        Text(
+                                          item.name,
+                                          style: const TextStyle(
+                                            fontSize: 14,
+                                            fontWeight: FontWeight.w500,
+                                          ),
+                                        ),
+                                        Text(
+                                          '${(item.confidence * 100).toStringAsFixed(0)}% • ${item.source}',
+                                          style: const TextStyle(
+                                            fontSize: 10,
+                                            color: Colors.grey,
+                                          ),
+                                        ),
+                                      ],
+                                    ),
+                                  ),
+                                  IconButton(
+                                    icon: const Icon(Icons.add_circle, color: Colors.green),
+                                    iconSize: 20,
+                                    onPressed: () async {
+                                      await _addItemToInventory(item.name);
+                                    },
+                                  ),
+                                ],
+                              ),
+                            )),
                           ],
                         ),
                       )
                     else
                       Container(
-                        padding: const EdgeInsets.all(8),
-                        child: const Text(
-                          "No items detected",
-                          style: TextStyle(fontSize: 12, color: Colors.grey),
+                        padding: const EdgeInsets.all(12),
+                        child: const Column(
+                          children: [
+                            Icon(Icons.search_off, size: 32, color: Colors.grey),
+                            SizedBox(height: 8),
+                            Text(
+                              "No items detected. Try retaking with better lighting.",
+                              style: TextStyle(fontSize: 12, color: Colors.grey),
+                              textAlign: TextAlign.center,
+                            ),
+                          ],
                         ),
                       ),
-                    const SizedBox(height: 8),
+                    const SizedBox(height: 12),
                     Row(
                       children: [
                         Expanded(
-                          child: TextButton(
+                          child: OutlinedButton.icon(
                             onPressed: resetCamera,
-                            child: const Text("Retake Now"),
+                            icon: const Icon(Icons.refresh),
+                            label: const Text("Retake"),
                           ),
                         ),
                         const SizedBox(width: 8),
                         Expanded(
-                          child: ElevatedButton(
-                            onPressed: () async {
-                              final messenger = ScaffoldMessenger.of(context);
-
-                              if (detectedLabels.isEmpty) {
-                                messenger.showSnackBar(
-                                  const SnackBar(
-                                    content: Text('No detected item to add'),
-                                  ),
-                                );
-                                return;
-                              }
-
-                              final itemName = detectedLabels.first;
-
-                              final item = Item(
-                                name: itemName,
-                                location: 'fridge',
-                                quantity: 1,
-                              );
-                              try {
-                                await DatabaseHelper.instance.insertItem(item);
-                                if (!mounted) return;
-                                messenger.showSnackBar(
-                                  SnackBar(
-                                    content: Text('Added item: $itemName'),
-                                  ),
-                                );
-                                widget.onNavigateToInventory?.call('fridge');
-                              } catch (e) {
-                                if (mounted) {
-                                  messenger.showSnackBar(
-                                    const SnackBar(
-                                      content: Text('Failed to add item'),
-                                    ),
-                                  );
-                                }
-                              }
-                            },
+                          child: ElevatedButton.icon(
+                            onPressed: detectedItems.isEmpty
+                                ? null
+                                : () async {
+                                    await _addItemToInventory(detectedItems.first.name);
+                                  },
+                            icon: const Icon(Icons.check),
+                            label: const Text("Add Top"),
                             style: ElevatedButton.styleFrom(
-                              backgroundColor: Colors.blue,
-                            ),
-                            child: const Text(
-                              "Use Photo",
-                              style: TextStyle(color: Colors.white),
+                              backgroundColor: Colors.green,
+                              foregroundColor: Colors.white,
                             ),
                           ),
                         ),
@@ -550,45 +757,45 @@ class _CameraScreenState extends State<CameraScreen> {
           if (capturedImage == null) ...[
             Container(
               padding: const EdgeInsets.all(16),
-              child: SizedBox(
-                width: double.infinity,
-                child: ElevatedButton(
-                  onPressed: takePhoto,
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: Colors.green,
-                    padding: const EdgeInsets.symmetric(vertical: 16),
+              child: Column(
+                children: [
+                  SizedBox(
+                    width: double.infinity,
+                    child: ElevatedButton.icon(
+                      onPressed: takePhoto,
+                      icon: const Icon(Icons.camera_alt),
+                      label: const Text("Take Photo"),
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: Colors.green,
+                        foregroundColor: Colors.white,
+                        padding: const EdgeInsets.symmetric(vertical: 16),
+                      ),
+                    ),
                   ),
-                  child: const Text(
-                    "Take Photo",
-                    style: TextStyle(color: Colors.white, fontSize: 16),
+                  const SizedBox(height: 12),
+                  SizedBox(
+                    width: double.infinity,
+                    child: ElevatedButton.icon(
+                      onPressed: () async {
+                        final result = await showDialog<bool>(
+                          context: context,
+                          builder: (context) => const VoiceRecognitionDialog(),
+                        );
+                        
+                        if (result == true && mounted) {
+                          widget.onNavigateToInventory?.call('fridge');
+                        }
+                      },
+                      icon: const Icon(Icons.mic),
+                      label: const Text("Use Voice"),
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: Colors.blue,
+                        foregroundColor: Colors.white,
+                        padding: const EdgeInsets.symmetric(vertical: 16),
+                      ),
+                    ),
                   ),
-                ),
-              ),
-            ),
-            Container(
-              padding: const EdgeInsets.symmetric(horizontal: 16),
-              child: SizedBox(
-                width: double.infinity,
-                child: ElevatedButton(
-                  onPressed: () async {
-                    final result = await showDialog<bool>(
-                      context: context,
-                      builder: (context) => const VoiceRecognitionDialog(),
-                    );
-                    
-                    if (result == true && mounted) {
-                      widget.onNavigateToInventory?.call('fridge');
-                    }
-                  },
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: Colors.blue,
-                    padding: const EdgeInsets.symmetric(vertical: 16),
-                  ),
-                  child: const Text(
-                    "Use Voice",
-                    style: TextStyle(color: Colors.white, fontSize: 16),
-                  ),
-                ),
+                ],
               ),
             ),
           ],
@@ -596,4 +803,86 @@ class _CameraScreenState extends State<CameraScreen> {
       ),
     );
   }
+
+  Future<void> _addItemToInventory(String itemName) async {
+    final messenger = ScaffoldMessenger.of(context);
+
+    // Show dialog to select location
+    final location = await showDialog<String>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text('Add $itemName'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Text('Select storage location:'),
+            const SizedBox(height: 16),
+            ListTile(
+              leading: const Icon(Icons.kitchen, color: Colors.blue),
+              title: const Text('Fridge'),
+              onTap: () => Navigator.pop(context, 'fridge'),
+            ),
+            ListTile(
+              leading: const Icon(Icons.countertops, color: Colors.orange),
+              title: const Text('Pantry'),
+              onTap: () => Navigator.pop(context, 'pantry'),
+            ),
+            ListTile(
+              leading: const Icon(Icons.ac_unit, color: Colors.lightBlue),
+              title: const Text('Freezer'),
+              onTap: () => Navigator.pop(context, 'freezer'),
+            ),
+          ],
+        ),
+      ),
+    );
+
+    if (location == null) return;
+
+    final item = Item(
+      name: itemName,
+      location: location,
+      quantity: 1,
+      category: 'General',
+    );
+
+    try {
+      await DatabaseHelper.instance.insertItem(item);
+      if (!mounted) return;
+      
+      messenger.showSnackBar(
+        SnackBar(
+          content: Text('✓ Added $itemName to $location'),
+          backgroundColor: Colors.green,
+        ),
+      );
+      
+      resetCamera();
+      widget.onNavigateToInventory?.call(location);
+    } catch (e) {
+      if (mounted) {
+        messenger.showSnackBar(
+          SnackBar(
+            content: Text('Failed to add item: $e'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
+    }
+  }
+}
+
+// Model for detected items
+class DetectedItem {
+  final String name;
+  final double confidence;
+  final String source;
+  final bool isFoodRelated;
+
+  DetectedItem({
+    required this.name,
+    required this.confidence,
+    required this.source,
+    this.isFoodRelated = false,
+  });
 }
