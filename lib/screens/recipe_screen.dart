@@ -189,7 +189,7 @@ class _RecipeScreenState extends State<RecipeScreen> {
 
                 ElevatedButton(
                   onPressed: loadPantryRecipes,
-                  child: const Text("Pantry Recipes"),
+                  child: const Text("All Recipes"),
                 ),
 
                 const SizedBox(width: 10),
