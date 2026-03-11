@@ -59,4 +59,33 @@ class ApiService {
   static Future<Map<String, dynamic>> sendAudio(String audioPath) async {
     return sendAudioWithLocation(audioPath, null);  // Auto-classify
   }
+
+  static Future<Map<String, dynamic>> addItem(
+    String name,
+    String location, {
+    int quantity = 1,
+  }) async {
+    try {
+      final uri = Uri.parse('$baseUrl/add-item').replace(
+        queryParameters: {
+          'name': name,
+          'location': location,
+          'quantity': quantity.toString(),
+        },
+      );
+      final response = await http.post(uri).timeout(
+        const Duration(seconds: 10),
+        onTimeout: () => throw Exception('Request timeout'),
+      );
+      if (response.statusCode == 200) {
+        return json.decode(response.body);
+      } else {
+        throw Exception('Server error: \${response.statusCode}');
+      }
+    } on SocketException catch (e) {
+      throw Exception('Cannot connect to server at $baseUrl. Error: $e');
+    } catch (e) {
+      throw Exception('Error adding item: $e');
+    }
+  }
 }

@@ -248,7 +248,6 @@ class _CameraScreenState extends State<CameraScreen> {
   String? errorMessage;
   List<DetectedItem> detectedItems = [];
   bool isDetecting = false;
-  String detectionMethod = 'hybrid'; // 'mlkit', 'backend', or 'hybrid'
 
   @override
   void initState() {
@@ -435,23 +434,11 @@ class _CameraScreenState extends State<CameraScreen> {
     });
 
     List<DetectedItem> items = [];
-    
+
     try {
-      switch (detectionMethod) {
-        case 'mlkit':
-          items = await detectWithMLKit(imagePath);
-          break;
-        case 'backend':
-          items = await detectWithBackend(imagePath);
-          break;
-        case 'hybrid':
-          items = await detectHybrid(imagePath);
-          break;
-      }
+      items = await detectWithBackend(imagePath);
     } catch (e) {
       debugPrint("Detection error: $e");
-      // Fallback to ML Kit
-      items = await detectWithMLKit(imagePath);
     }
 
     if (mounted) {
@@ -548,34 +535,7 @@ class _CameraScreenState extends State<CameraScreen> {
     return Scaffold(
       appBar: AppBar(
         title: const Text("Scan Camera"),
-        actions: [
-          PopupMenuButton<String>(
-            icon: const Icon(Icons.settings),
-            initialValue: detectionMethod,
-            onSelected: (String value) {
-              setState(() {
-                detectionMethod = value;
-              });
-              if (capturedImage != null) {
-                detectItems(capturedImage!.path);
-              }
-            },
-            itemBuilder: (context) => [
-              const PopupMenuItem(
-                value: 'mlkit',
-                child: Text('ML Kit Only'),
-              ),
-              const PopupMenuItem(
-                value: 'backend',
-                child: Text('Backend AI'),
-              ),
-              const PopupMenuItem(
-                value: 'hybrid',
-                child: Text('Hybrid (Best)'),
-              ),
-            ],
-          ),
-        ],
+        actions: const [],
       ),
       body: Column(
         children: [
@@ -585,12 +545,12 @@ class _CameraScreenState extends State<CameraScreen> {
               children: [
                 Center(
                   child: AspectRatio(
-                    aspectRatio: _cameraController!.value.aspectRatio,
+                    aspectRatio: 9 / 16,
                     child: capturedImage == null
                         ? CameraPreview(_cameraController!)
                         : Image.file(
                             File(capturedImage!.path),
-                            fit: BoxFit.contain,
+                            fit: BoxFit.cover,
                           ),
                   ),
                 ),
@@ -629,9 +589,9 @@ class _CameraScreenState extends State<CameraScreen> {
                   children: [
                     Row(
                       children: [
-                        Text(
-                          'Method: ${detectionMethod.toUpperCase()}',
-                          style: const TextStyle(
+                        const Text(
+                          'Method: MobileNetV2',
+                          style: TextStyle(
                             fontSize: 10,
                             color: Colors.grey,
                             fontWeight: FontWeight.bold,
@@ -839,24 +799,30 @@ class _CameraScreenState extends State<CameraScreen> {
 
     if (location == null) return;
 
-    final item = Item(
-      name: itemName,
-      location: location,
-      quantity: 1,
-      category: 'General',
-    );
-
     try {
+      // Call backend so expiry/category use the same logic as voice commands
+      final result = await ApiService.addItem(itemName, location);
+
+      final item = Item(
+        name: result['product'] ?? itemName,
+        location: result['location'] ?? location,
+        quantity: result['quantity'] ?? 1,
+        expiry: result['expiry'] != null
+            ? DateTime.parse(result['expiry'])
+            : null,
+        category: result['category'] ?? 'General',
+      );
+
       await DatabaseHelper.instance.insertItem(item);
       if (!mounted) return;
-      
+
       messenger.showSnackBar(
         SnackBar(
-          content: Text('✓ Added $itemName to $location'),
+          content: Text('✓ Added ${item.name} to ${item.location}'),
           backgroundColor: Colors.green,
         ),
       );
-      
+
       resetCamera();
       widget.onNavigateToInventory?.call(location);
     } catch (e) {
