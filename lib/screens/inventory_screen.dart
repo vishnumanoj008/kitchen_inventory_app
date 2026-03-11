@@ -3,6 +3,7 @@ import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:permission_handler/permission_handler.dart';
 import '../models/item.dart';
 import '../data/database_helper.dart';
+import '../utils/expiry_predictor.dart';
 
 class InventoryScreen extends StatefulWidget {
   final String initialLocation;
@@ -510,6 +511,7 @@ class ManualEntryDialog extends StatefulWidget {
 class _ManualEntryDialogState extends State<ManualEntryDialog> {
   late TextEditingController nameController;
   late TextEditingController expiryNumberController;
+  late FocusNode _nameFocusNode;
 
   String selectedLocation = "Fridge";
   String selectedTimeUnit = "Days";
@@ -550,6 +552,12 @@ class _ManualEntryDialogState extends State<ManualEntryDialog> {
 
     nameController = TextEditingController();
     expiryNumberController = TextEditingController();
+    _nameFocusNode = FocusNode();
+    _nameFocusNode.addListener(() {
+      if (!_nameFocusNode.hasFocus) {
+        _autofillExpiry();
+      }
+    });
 
     if (widget.existingItem != null) {
       nameController.text = widget.existingItem!.name;
@@ -569,7 +577,22 @@ class _ManualEntryDialogState extends State<ManualEntryDialog> {
   void dispose() {
     nameController.dispose();
     expiryNumberController.dispose();
+    _nameFocusNode.dispose();
     super.dispose();
+  }
+
+  void _autofillExpiry() {
+    if (nameController.text.trim().isEmpty) return;
+    if (expiryNumberController.text.isNotEmpty) return;
+
+    final days = ExpiryPredictor.predictDays(nameController.text);
+    if (days != null) {
+      setState(() {
+        useSpecificDate = false;
+        expiryNumberController.text = days.toString();
+        selectedTimeUnit = "Days";
+      });
+    }
   }
 
   @override
@@ -583,6 +606,7 @@ class _ManualEntryDialogState extends State<ManualEntryDialog> {
 
             TextField(
               controller: nameController,
+              focusNode: _nameFocusNode,
               decoration: InputDecoration(
                 labelText: "Item Name",
                 hintText: "e.g., Milk",
