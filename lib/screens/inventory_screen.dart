@@ -3,6 +3,7 @@ import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:permission_handler/permission_handler.dart';
 import '../models/item.dart';
 import '../data/database_helper.dart';
+import '../utils/expiry_predictor.dart';
 
 class InventoryScreen extends StatefulWidget {
   final String initialLocation;
@@ -21,6 +22,8 @@ class InventoryScreen extends StatefulWidget {
 class _InventoryScreenState extends State<InventoryScreen> {
   late String activeLocation;
   List<Item> items = [];
+  bool selectionMode = false;
+  Set<int> selectedItems = {};
   
   final FlutterLocalNotificationsPlugin _notifications =
       FlutterLocalNotificationsPlugin();
@@ -167,12 +170,12 @@ class _InventoryScreenState extends State<InventoryScreen> {
     if(s=="warning") return Colors.orange;
     return Colors.green;
   }
-
-  void showAddItemDialog() {
-    showDialog(
+  void showAddItemDialog() async {
+      showDialog(
       context: context,
       builder: (context) => AddItemDialog(
         onNavigateToCamera: widget.onNavigateToCamera,
+        onItemAdded: loadItems,
       ),
     );
   }
@@ -183,6 +186,11 @@ class _InventoryScreenState extends State<InventoryScreen> {
       appBar: AppBar(
         title: const Text("Inventory"),
         centerTitle: true,
+      ),
+      floatingActionButton: FloatingActionButton(
+        onPressed: showAddItemDialog,
+        tooltip: "Add Item",
+        child: const Icon(Icons.add),
       ),
       body: Padding(
         padding: const EdgeInsets.all(16.0),
@@ -289,11 +297,22 @@ class _InventoryScreenState extends State<InventoryScreen> {
                           return GestureDetector(
                             onDoubleTap: () => _notifyItemExpiry(item),
                             child: Card(
+                              color: selectedItems.contains(item.id ?? i)
+                                  ? Colors.blue.shade50
+                                  : null,
                               margin: const EdgeInsets.symmetric(
                                 horizontal: 12,
                                 vertical: 6,
                               ),
                               child: ListTile(
+                                onTap: () {
+                                  showDialog(
+                                    context: context,
+                                    builder: (context) => ManualEntryDialog(
+                                      existingItem: item,
+                                    ),
+                                  ).then((_) => loadItems());
+                                },
                                 title: Text(item.name),
                                 subtitle: Text(
                                   "${item.category ?? "General"} • Expires in: ${_formatExpiry(item.expiry)}",
@@ -302,8 +321,30 @@ class _InventoryScreenState extends State<InventoryScreen> {
                                 trailing: Row(
                                   mainAxisSize: MainAxisSize.min,
                                   children: [
+
                                     Text("Qty: ${item.quantity}"),
+
                                     const SizedBox(width: 8),
+
+                                    IconButton(
+                                      icon: const Icon(Icons.edit, color: Colors.blue),
+                                      tooltip: 'Edit Item',
+                                      onPressed: () async {
+                                        final result = await showDialog(
+                                          context: context,
+                                          builder: (context) => ManualEntryDialog(
+                                            existingItem: item,
+                                          ),
+                                        );
+
+                                        if (result == true) {
+                                          loadItems();
+                                        }
+                                      },
+                                    ),
+
+                                    const SizedBox(width: 4),
+
                                     IconButton(
                                       icon: const Icon(Icons.delete, color: Colors.red),
                                       tooltip: 'Delete Item',
@@ -312,26 +353,36 @@ class _InventoryScreenState extends State<InventoryScreen> {
                                           context: context,
                                           builder: (context) => AlertDialog(
                                             title: const Text('Delete Item'),
-                                            content: Text('Are you sure you want to delete "${item.name}"?'),
+                                            content: Text(
+                                                'Are you sure you want to delete "${item.name}"?'),
                                             actions: [
                                               TextButton(
-                                                onPressed: () => Navigator.pop(context, false),
+                                                onPressed: () =>
+                                                    Navigator.pop(context, false),
                                                 child: const Text('Cancel'),
                                               ),
                                               ElevatedButton(
-                                                onPressed: () => Navigator.pop(context, true),
-                                                style: ElevatedButton.styleFrom(backgroundColor: Colors.red),
+                                                onPressed: () =>
+                                                    Navigator.pop(context, true),
+                                                style: ElevatedButton.styleFrom(
+                                                    backgroundColor: Colors.red),
                                                 child: const Text('Delete'),
                                               ),
                                             ],
                                           ),
                                         );
+
                                         if (confirm == true) {
-                                          await DatabaseHelper.instance.deleteItem(item.id ?? 0);
+                                          await DatabaseHelper.instance
+                                              .deleteItem(item.id ?? 0);
+
                                           loadItems();
+
                                           if (mounted) {
                                             ScaffoldMessenger.of(context).showSnackBar(
-                                              SnackBar(content: Text('Deleted item: ${item.name}')),
+                                              SnackBar(
+                                                content: Text('Deleted item: ${item.name}'),
+                                              ),
                                             );
                                           }
                                         }
@@ -358,8 +409,8 @@ class _InventoryScreenState extends State<InventoryScreen> {
 
 class AddItemDialog extends StatelessWidget {
   final VoidCallback? onNavigateToCamera;
-
-  const AddItemDialog({super.key, this.onNavigateToCamera});
+  final VoidCallback? onItemAdded;
+  const AddItemDialog({super.key, this.onNavigateToCamera, this.onItemAdded});
 
   @override
   Widget build(BuildContext context) {
@@ -416,7 +467,7 @@ class AddItemDialog extends StatelessWidget {
               showDialog(
                 context: context,
                 builder: (context) => const ManualEntryDialog(),
-              );
+              ).then((_) => onItemAdded?.call());
             },
             child: Container(
               padding: const EdgeInsets.all(16),
@@ -446,7 +497,12 @@ class AddItemDialog extends StatelessWidget {
 }
 
 class ManualEntryDialog extends StatefulWidget {
-  const ManualEntryDialog({super.key});
+  final Item? existingItem;
+
+  const ManualEntryDialog({
+    super.key,
+    this.existingItem,
+  });
 
   @override
   State<ManualEntryDialog> createState() => _ManualEntryDialogState();
@@ -455,11 +511,15 @@ class ManualEntryDialog extends StatefulWidget {
 class _ManualEntryDialogState extends State<ManualEntryDialog> {
   late TextEditingController nameController;
   late TextEditingController expiryNumberController;
+  late FocusNode _nameFocusNode;
+
   String selectedLocation = "Fridge";
   String selectedTimeUnit = "Days";
 
   DateTime? selectedExpiryDate;
   TimeOfDay? selectedExpiryTime;
+
+  bool useSpecificDate = false;
 
   DateTime _combine(DateTime d, TimeOfDay t) {
     return DateTime(d.year, d.month, d.day, t.hour, t.minute);
@@ -489,15 +549,50 @@ class _ManualEntryDialogState extends State<ManualEntryDialog> {
   @override
   void initState() {
     super.initState();
+
     nameController = TextEditingController();
     expiryNumberController = TextEditingController();
+    _nameFocusNode = FocusNode();
+    _nameFocusNode.addListener(() {
+      if (!_nameFocusNode.hasFocus) {
+        _autofillExpiry();
+      }
+    });
+
+    if (widget.existingItem != null) {
+      nameController.text = widget.existingItem!.name;
+
+      selectedLocation =
+          widget.existingItem!.location == "pantry" ? "Pantry" : "Fridge";
+
+      if (widget.existingItem!.expiry != null) {
+        selectedExpiryDate = widget.existingItem!.expiry;
+        selectedExpiryTime = TimeOfDay.fromDateTime(widget.existingItem!.expiry!);
+        useSpecificDate = true;
+      }
+    }
   }
 
   @override
   void dispose() {
     nameController.dispose();
     expiryNumberController.dispose();
+    _nameFocusNode.dispose();
     super.dispose();
+  }
+
+  void _autofillExpiry() {
+    if (nameController.text.trim().isEmpty) return;
+    if (expiryNumberController.text.isNotEmpty) return;
+
+    final days = ExpiryPredictor.predictDays(nameController.text);
+    if (days != null) {
+      setState(() {
+        useSpecificDate = false;
+        expiryNumberController.text = days.toString();
+        selectedTimeUnit = "Days";
+      });
+    }
   }
 
   @override
@@ -508,8 +603,10 @@ class _ManualEntryDialogState extends State<ManualEntryDialog> {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
+
             TextField(
               controller: nameController,
+              focusNode: _nameFocusNode,
               decoration: InputDecoration(
                 labelText: "Item Name",
                 hintText: "e.g., Milk",
@@ -518,7 +615,9 @@ class _ManualEntryDialogState extends State<ManualEntryDialog> {
                 ),
               ),
             ),
+
             const SizedBox(height: 12),
+
             DropdownButtonFormField<String>(
               value: selectedLocation,
               decoration: InputDecoration(
@@ -537,109 +636,187 @@ class _ManualEntryDialogState extends State<ManualEntryDialog> {
                 });
               },
             ),
+
             const SizedBox(height: 12),
+
+            Row(
+              children: [
+                const Text("Expiry Mode"),
+                const SizedBox(width: 10),
+                DropdownButton<bool>(
+                  value: useSpecificDate,
+                  items: const [
+                    DropdownMenuItem(value: false, child: Text("Duration")),
+                    DropdownMenuItem(value: true, child: Text("Specific Date")),
+                  ],
+                  onChanged: (v) {
+                    setState(() {
+                      useSpecificDate = v ?? false;
+
+                      if (useSpecificDate && selectedExpiryDate == null) {
+                        selectedExpiryDate =
+                            DateTime.now().add(const Duration(days: 1));
+                      }
+
+                      if (!useSpecificDate && selectedExpiryDate != null) {
+                        final difference =
+                            selectedExpiryDate!.difference(DateTime.now()).inDays;
+
+                        if (difference > 0) {
+                          expiryNumberController.text = difference.toString();
+                          selectedTimeUnit = "Days";
+                        }
+                      }
+                    });
+                  },
+                )
+              ],
+            ),
+
+            const SizedBox(height: 12),
+
             Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                const Text("Expiry", style: TextStyle(fontSize: 12, color: Colors.grey)),
-                const SizedBox(height: 8),
-                Row(
-                  children: [
-                    Expanded(
-                      flex: 2,
-                      child: TextField(
-                        controller: expiryNumberController,
-                        keyboardType: TextInputType.number,
-                        decoration: InputDecoration(
-                          hintText: "e.g., 2",
-                          border: OutlineInputBorder(
-                            borderRadius: BorderRadius.circular(8),
-                          ),
-                        ),
-                      ),
-                    ),
-                    const SizedBox(width: 8),
-                    Expanded(
-                      flex: 2,
-                      child: DropdownButtonFormField<String>(
-                        value: selectedTimeUnit,
-                        decoration: InputDecoration(
-                          border: OutlineInputBorder(
-                            borderRadius: BorderRadius.circular(8),
-                          ),
-                        ),
-                        items: const [
-                          DropdownMenuItem(value: "Days", child: Text("Days")),
-                          DropdownMenuItem(value: "Months", child: Text("Months")),
-                          DropdownMenuItem(value: "Years", child: Text("Years")),
-                        ],
-                        onChanged: (value) {
-                          setState(() {
-                            selectedTimeUnit = value ?? "Days";
-                          });
-                        },
-                      ),
-                    ),
-                  ],
+
+                const Text(
+                  "Expiry",
+                  style: TextStyle(fontSize: 12, color: Colors.grey),
                 ),
+
+                const SizedBox(height: 8),
+
+                useSpecificDate
+                    ? ElevatedButton(
+                        onPressed: _pickExpiryDateTime,
+                        child: Text(
+                          selectedExpiryDate == null
+                              ? "Pick Expiry Date"
+                              : "${selectedExpiryDate!.toLocal()} ${selectedExpiryTime?.format(context) ?? ""}",
+                        ),
+                      )
+                    : Row(
+                        children: [
+                          Expanded(
+                            flex: 2,
+                            child: TextField(
+                              controller: expiryNumberController,
+                              keyboardType: TextInputType.number,
+                            ),
+                          ),
+                          const SizedBox(width: 8),
+                          Expanded(
+                            flex: 2,
+                            child: DropdownButtonFormField<String>(
+                              value: selectedTimeUnit,
+                              items: const [
+                                DropdownMenuItem(value: "Days", child: Text("Days")),
+                                DropdownMenuItem(value: "Months", child: Text("Months")),
+                                DropdownMenuItem(value: "Years", child: Text("Years")),
+                              ],
+                              onChanged: (value) {
+                                setState(() {
+                                  selectedTimeUnit = value ?? "Days";
+                                });
+                              },
+                            ),
+                          ),
+                        ],
+                      ),
               ],
             ),
           ],
         ),
       ),
+
       actions: [
+
         TextButton(
           onPressed: () => Navigator.pop(context),
           child: const Text("Cancel"),
         ),
+
         ElevatedButton(
           onPressed: () async {
             final name = nameController.text.trim();
-            final expiryNum = int.tryParse(expiryNumberController.text) ?? 0;
-            
-            if (name.isEmpty || expiryNum <= 0) {
+
+            if (name.isEmpty) {
               ScaffoldMessenger.of(context).showSnackBar(
-                const SnackBar(content: Text('Please fill all fields')),
+                const SnackBar(content: Text('Please enter item name')),
               );
               return;
             }
 
-            // Calculate expiry based on unit
-            DateTime expiryDate = DateTime.now();
-            if (selectedTimeUnit == "Days") {
-              expiryDate = expiryDate.add(Duration(days: expiryNum));
-            } else if (selectedTimeUnit == "Months") {
-              expiryDate = DateTime(
-                expiryDate.year,
-                expiryDate.month + expiryNum,
-                expiryDate.day,
-              );
-            } else if (selectedTimeUnit == "Years") {
-              expiryDate = DateTime(
-                expiryDate.year + expiryNum,
-                expiryDate.month,
-                expiryDate.day,
-              );
+            DateTime? expiryDate;
+
+            if (useSpecificDate) {
+              if (selectedExpiryDate != null) {
+                if (selectedExpiryTime != null) {
+                  expiryDate = _combine(selectedExpiryDate!, selectedExpiryTime!);
+                } else {
+                  expiryDate = selectedExpiryDate!;
+                }
+              }
+            } else {
+              final expiryNum = int.tryParse(expiryNumberController.text);
+
+              if (expiryNum != null && expiryNum > 0) {
+                expiryDate = DateTime.now();
+
+                if (selectedTimeUnit == "Days") {
+                  expiryDate = expiryDate.add(Duration(days: expiryNum));
+                } else if (selectedTimeUnit == "Months") {
+                  expiryDate = DateTime(
+                    expiryDate.year,
+                    expiryDate.month + expiryNum,
+                    expiryDate.day,
+                  );
+                } else {
+                  expiryDate = DateTime(
+                    expiryDate.year + expiryNum,
+                    expiryDate.month,
+                    expiryDate.day,
+                  );
+                }
+              }
             }
 
-            await DatabaseHelper.instance.insertItem(
-              Item(
-                name: name,
-                location: selectedLocation.toLowerCase(),
-                expiry: expiryDate,
-                quantity: 1,
-                category: "General",
-              ),
-            );
+            if (widget.existingItem == null) {
+              await DatabaseHelper.instance.insertItem(
+                Item(
+                  name: name,
+                  location: selectedLocation.toLowerCase(),
+                  expiry: expiryDate,
+                  quantity: 1,
+                  category: "General",
+                ),
+              );
+            } else {
+              await DatabaseHelper.instance.updateItem(
+                Item(
+                  id: widget.existingItem!.id,
+                  name: name,
+                  location: selectedLocation.toLowerCase(),
+                  expiry: expiryDate,
+                  quantity: 1,
+                  category: "General",
+                ),
+              );
+            }
 
             if (context.mounted) {
               Navigator.pop(context, true);
+
+              final message =
+                  widget.existingItem == null ? 'Added $name' : 'Updated $name';
+
               ScaffoldMessenger.of(context).showSnackBar(
-                SnackBar(content: Text('Added $name')),
+                SnackBar(content: Text(message)),
               );
             }
           },
-          child: const Text("Add Item"),
+
+          child: Text(widget.existingItem == null ? "Add Item" : "Update Item"),
         ),
       ],
     );
